@@ -1,0 +1,681 @@
+#!/usr/bin/env python3
+"""
+EDR Lab GUI — operator console
+Run from the repo root on the center machine (cen):
+    python3 edr_lab_gui.py
+
+Requires customtkinter (one-time install, needs internet once):
+    pip install customtkinter
+After that, running the script itself is fully offline.
+
+What this version does differently from a plain "type your flags" GUI:
+- It still doesn't guess run.py's exact flags (only you know those), so the
+  run command stays an editable template on the Setup page.
+- Everything AFTER launch is auto-parsed from stdout: run id, report path,
+  findings, telemetry percentages, and result (detected / inconclusive) —
+  generically, as "Label: value" lines, so lines you can't predict in advance
+  still show up in the summary panel instead of being silently dropped.
+- The report path is read from the literal "reports: <path>" line the
+  harness prints, not guessed via glob.
+- The minisiem log pull is wired to fire automatically once a run id is
+  known, using an editable template (defaults to what you described:
+  python3 todos/minisiem/querry.py --run <run_id>).
+
+Settings (the two command templates) persist in .edr_gui_settings.json
+next to this script.
+"""
+
+import os
+import re
+import glob
+import json
+import queue
+import shlex
+import subprocess
+import threading
+from collections import OrderedDict
+
+try:
+    import customtkinter as ctk
+except ImportError:
+    raise SystemExit(
+        "customtkinter is not installed.\n"
+        "Run this once (needs internet): pip install customtkinter"
+    )
+
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_FILE = os.path.join(REPO_ROOT, ".edr_gui_settings.json")
+
+# ---------- palette: dark operator console, one live-accent ----------
+BG = "#0d0f0d"
+SIDEBAR = "#0a0b0a"
+PANEL = "#141712"
+PANEL_ALT = "#181c17"
+BORDER = "#262b24"
+ACCENT = "#4fd18b"      # detected / healthy / live
+ACCENT_DIM = "#2c8a5c"
+TEXT = "#d9ded7"
+TEXT_DIM = "#7d867a"
+RED = "#e05a4e"         # inconclusive / warning
+RED_DIM = "#8a372f"
+AMBER = "#e0b04e"       # running / pending
+MONO = "Consolas"
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("green")
+
+# ---------- generic output parsing ----------
+# Any "Label: value" line gets captured as-is, so fields you can't predict
+# in advance (or don't remember, like the extra sensor lines) still surface.
+KEYVAL_RE = re.compile(r"^\s*([A-Za-z][\w \-/]{1,40}):\s*(.+?)\s*$")
+RUN_ID_RE = re.compile(r"\bR\d{4,}\b")
+FINDINGS_RE = re.compile(r"(\d+)\s+findings?\s+from\s+(\d+)\s+cases?", re.IGNORECASE)
+RESULT_COLORS = {"detected": ACCENT, "inconclusive": RED}
+
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_settings(data):
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def scan_repo():
+    """Look at what actually exists in the repo, no assumptions."""
+    found = {}
+
+    harness_candidates = []
+    root_run = os.path.join(REPO_ROOT, "run.py")
+    if os.path.isfile(root_run):
+        harness_candidates.append("run.py")
+    for p in glob.glob(os.path.join(REPO_ROOT, "run*.py")):
+        rel = os.path.relpath(p, REPO_ROOT)
+        if rel not in harness_candidates:
+            harness_candidates.append(rel)
+    for p in glob.glob(os.path.join(REPO_ROOT, "harness", "*.py")):
+        rel = os.path.relpath(p, REPO_ROOT)
+        if rel not in harness_candidates:
+            harness_candidates.append(rel)
+    found["harness_scripts"] = harness_candidates
+
+    payloads_dir = os.path.join(REPO_ROOT, "payloads")
+    found["payloads"] = (
+        sorted(os.listdir(payloads_dir)) if os.path.isdir(payloads_dir) else []
+    )
+
+    store_dir = os.path.join(REPO_ROOT, "store")
+    found["store_entries"] = (
+        sorted(os.listdir(store_dir)) if os.path.isdir(store_dir) else []
+    )
+
+    reports_dir = os.path.join(REPO_ROOT, "reports")
+    found["reports"] = (
+        sorted(os.listdir(reports_dir)) if os.path.isdir(reports_dir) else []
+    )
+
+    # minisiem's folder name has shown up spelled two ways so far - check both.
+    minisiem_candidates = []
+    for base in ("tods", "todos", "tools"):
+        minisiem_candidates += glob.glob(os.path.join(REPO_ROOT, base, "minisiem", "*.py"))
+    found["minisiem_scripts"] = [os.path.relpath(p, REPO_ROOT) for p in minisiem_candidates]
+
+    return found
+
+
+class SidebarButton(ctk.CTkButton):
+    def __init__(self, master, text, command):
+        super().__init__(
+            master, text=text, command=command, anchor="w",
+            fg_color="transparent", hover_color=PANEL, text_color=TEXT_DIM,
+            font=ctk.CTkFont(family=MONO, size=12), corner_radius=4,
+            height=32, width=160
+        )
+
+    def set_active(self, active):
+        self.configure(
+            text_color=TEXT if active else TEXT_DIM,
+            fg_color=PANEL if active else "transparent",
+        )
+
+
+class LiveDot(ctk.CTkCanvas):
+    """Small blinking dot next to a 'LIVE' label - this GUI launches real
+    payloads on this machine, so the console should never look idle-safe."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, width=10, height=10, bg=SIDEBAR, highlightthickness=0, **kwargs)
+        self.dot = self.create_oval(1, 1, 9, 9, fill=RED, outline="")
+        self._on = True
+        self._blink()
+
+    def _blink(self):
+        self._on = not self._on
+        self.itemconfig(self.dot, fill=RED if self._on else RED_DIM)
+        self.after(650, self._blink)
+
+
+class EDRLabGUI(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("edr-lab // console")
+        self.geometry("1040x680")
+        self.configure(fg_color=BG)
+
+        self.settings = load_settings()
+        self.scan = scan_repo()
+        self.output_queue = queue.Queue()
+        self.last_run_id = None
+        self.report_path_hint = None
+        self.run_summary = OrderedDict()
+        self.current_result = None
+
+        self._build_shell()
+        self._build_pages()
+        self.show_page("run")
+        self.after(100, self._poll_queue)
+
+    # ---------- shell: sidebar + content area ----------
+    def _build_shell(self):
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        sidebar = ctk.CTkFrame(self, fg_color=SIDEBAR, width=180, corner_radius=0)
+        sidebar.grid(row=0, column=0, sticky="ns")
+        sidebar.grid_propagate(False)
+
+        ctk.CTkLabel(
+            sidebar, text="edr-lab", font=ctk.CTkFont(family=MONO, size=15, weight="bold"),
+            text_color=TEXT
+        ).pack(anchor="w", padx=16, pady=(20, 2))
+
+        live_row = ctk.CTkFrame(sidebar, fg_color="transparent")
+        live_row.pack(anchor="w", padx=16, pady=(0, 18))
+        LiveDot(live_row).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(
+            live_row, text="live · local execution", font=ctk.CTkFont(family=MONO, size=9),
+            text_color=RED
+        ).pack(side="left")
+
+        self.nav_buttons = {}
+        for key, label in [
+            ("setup", "setup"),
+            ("run", "run"),
+            ("report", "report"),
+            ("evidence", "evidence"),
+        ]:
+            btn = SidebarButton(sidebar, label, command=lambda k=key: self.show_page(k))
+            btn.pack(fill="x", padx=8, pady=2)
+            self.nav_buttons[key] = btn
+
+        ctk.CTkLabel(
+            sidebar, text=f"repo:\n{os.path.basename(REPO_ROOT)}",
+            font=ctk.CTkFont(family=MONO, size=9), text_color=TEXT_DIM, justify="left"
+        ).pack(side="bottom", anchor="w", padx=16, pady=16)
+
+        self.content = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        self.content.grid(row=0, column=1, sticky="nsew", padx=24, pady=20)
+
+    def show_page(self, key):
+        for k, btn in self.nav_buttons.items():
+            btn.set_active(k == key)
+        for page in self.pages.values():
+            page.pack_forget()
+        self.pages[key].pack(fill="both", expand=True)
+
+    # ---------- pages ----------
+    def _build_pages(self):
+        self.pages = {
+            "setup": self._page_setup(),
+            "run": self._page_run(),
+            "report": self._page_report(),
+            "evidence": self._page_evidence(),
+        }
+
+    def _section_title(self, parent, text):
+        ctk.CTkLabel(
+            parent, text=text, font=ctk.CTkFont(family=MONO, size=11, weight="bold"),
+            text_color=TEXT_DIM
+        ).pack(anchor="w", pady=(0, 6))
+
+    def _detected_row(self, parent, label, items):
+        row = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=4, border_width=1, border_color=BORDER)
+        row.pack(fill="x", pady=4)
+        inner = ctk.CTkFrame(row, fg_color="transparent")
+        inner.pack(fill="x", padx=12, pady=8)
+
+        status = "found" if items else "none found"
+        color = ACCENT if items else TEXT_DIM
+        top = ctk.CTkFrame(inner, fg_color="transparent")
+        top.pack(fill="x")
+        ctk.CTkLabel(
+            top, text=label, font=ctk.CTkFont(family=MONO, size=12), text_color=TEXT
+        ).pack(side="left")
+        ctk.CTkLabel(
+            top, text=status, font=ctk.CTkFont(family=MONO, size=11), text_color=color
+        ).pack(side="right")
+
+        if items:
+            preview = ", ".join(items[:4]) + (f"  (+{len(items)-4} more)" if len(items) > 4 else "")
+            ctk.CTkLabel(
+                inner, text=preview, font=ctk.CTkFont(family=MONO, size=10), text_color=TEXT_DIM,
+                wraplength=560, justify="left"
+            ).pack(anchor="w", pady=(4, 0))
+
+    # ---- Setup page ----
+    def _page_setup(self):
+        p = ctk.CTkFrame(self.content, fg_color="transparent")
+        scroll = ctk.CTkScrollableFrame(p, fg_color="transparent")
+        scroll.pack(fill="both", expand=True)
+
+        self._section_title(scroll, "detected in repo")
+        self._detected_row(scroll, "harness / run script", self.scan["harness_scripts"])
+        self._detected_row(scroll, "payloads/", self.scan["payloads"])
+        self._detected_row(scroll, "store/", self.scan["store_entries"])
+        self._detected_row(scroll, "reports/", self.scan["reports"])
+        self._detected_row(scroll, "minisiem script", self.scan["minisiem_scripts"])
+
+        rescan_btn = ctk.CTkButton(
+            scroll, text="rescan", command=self.rescan_repo, width=90, height=28,
+            fg_color="transparent", border_width=1, border_color=BORDER,
+            hover_color=PANEL, text_color=TEXT, font=ctk.CTkFont(family=MONO, size=11)
+        )
+        rescan_btn.pack(anchor="w", pady=(10, 20))
+
+        note = ctk.CTkFrame(scroll, fg_color=PANEL_ALT, corner_radius=4, border_width=1, border_color=AMBER)
+        note.pack(fill="x", pady=(0, 20))
+        ctk.CTkLabel(
+            note, text="⚠  preflight is skipped manually — confirm NAT is disabled and\n"
+                        "    the network link is up before hitting run.",
+            font=ctk.CTkFont(family=MONO, size=11), text_color=AMBER, justify="left"
+        ).pack(anchor="w", padx=12, pady=10)
+
+        self._section_title(scroll, "run command  (edit to match run.py's real flags)")
+        ctk.CTkLabel(
+            scroll, text="use {payload} where the payload name should go",
+            font=ctk.CTkFont(family=MONO, size=10), text_color=TEXT_DIM
+        ).pack(anchor="w", pady=(0, 6))
+        self.run_cmd_entry = ctk.CTkEntry(
+            scroll, font=ctk.CTkFont(family=MONO, size=12), fg_color=PANEL,
+            border_color=BORDER, text_color=TEXT, height=32
+        )
+        default_harness = self.scan["harness_scripts"][0] if self.scan["harness_scripts"] else "run.py"
+        self.run_cmd_entry.insert(
+            0, self.settings.get("run_cmd", f"python3 {default_harness} {{payload}}")
+        )
+        self.run_cmd_entry.pack(fill="x", pady=(0, 16))
+
+        self._section_title(scroll, "minisiem log command  (edit if the path is wrong)")
+        ctk.CTkLabel(
+            scroll, text="use {run_id} where the run id should go",
+            font=ctk.CTkFont(family=MONO, size=10), text_color=TEXT_DIM
+        ).pack(anchor="w", pady=(0, 6))
+        self.log_cmd_entry = ctk.CTkEntry(
+            scroll, font=ctk.CTkFont(family=MONO, size=12), fg_color=PANEL,
+            border_color=BORDER, text_color=TEXT, height=32
+        )
+        default_minisiem = self.scan["minisiem_scripts"][0] if self.scan["minisiem_scripts"] else "todos/minisiem/querry.py"
+        self.log_cmd_entry.insert(
+            0, self.settings.get("log_cmd", f"python3 {default_minisiem} --run {{run_id}}")
+        )
+        self.log_cmd_entry.pack(fill="x", pady=(0, 16))
+
+        ctk.CTkButton(
+            scroll, text="save", command=self.save_commands, width=90, height=28,
+            fg_color=ACCENT_DIM, hover_color=ACCENT, text_color="#0d0f0d",
+            font=ctk.CTkFont(family=MONO, size=11, weight="bold")
+        ).pack(anchor="w")
+
+        return p
+
+    def rescan_repo(self):
+        self.scan = scan_repo()
+        for key in ("setup", "run"):
+            self.pages[key].destroy()
+        self.pages["setup"] = self._page_setup()
+        self.pages["run"] = self._page_run()
+        self.show_page("setup")
+
+    def save_commands(self):
+        self.settings["run_cmd"] = self.run_cmd_entry.get()
+        self.settings["log_cmd"] = self.log_cmd_entry.get()
+        save_settings(self.settings)
+
+    # ---- Run page ----
+    def _page_run(self):
+        p = ctk.CTkFrame(self.content, fg_color="transparent")
+
+        top = ctk.CTkFrame(p, fg_color="transparent")
+        top.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            top, text="payload", font=ctk.CTkFont(family=MONO, size=12), text_color=TEXT_DIM
+        ).pack(side="left")
+
+        self.payload_var = ctk.StringVar()
+        payloads = self.scan["payloads"]
+        self.payload_dropdown = ctk.CTkOptionMenu(
+            top, values=payloads if payloads else ["(none found - check Setup)"],
+            variable=self.payload_var, width=240,
+            fg_color=PANEL, button_color=BORDER, button_hover_color=ACCENT_DIM,
+            text_color=TEXT, font=ctk.CTkFont(family=MONO, size=12),
+            dropdown_fg_color=PANEL, dropdown_text_color=TEXT
+        )
+        self.payload_dropdown.pack(side="left", padx=10)
+        if payloads:
+            self.payload_var.set(payloads[0])
+
+        self.run_btn = ctk.CTkButton(
+            top, text="▶ run", command=self.run_payload, width=100, height=30,
+            fg_color=RED_DIM, hover_color=RED, text_color="#0d0f0d",
+            font=ctk.CTkFont(family=MONO, size=12, weight="bold")
+        )
+        self.run_btn.pack(side="left", padx=6)
+
+        # split: console (left) + live summary (right)
+        body = ctk.CTkFrame(p, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
+        body.grid_rowconfigure(0, weight=1)
+
+        console_frame = ctk.CTkFrame(body, fg_color="transparent")
+        console_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        ctk.CTkLabel(
+            console_frame, text="console", font=ctk.CTkFont(family=MONO, size=10),
+            text_color=TEXT_DIM
+        ).pack(anchor="w", pady=(0, 4))
+        self.output_box = ctk.CTkTextbox(
+            console_frame, fg_color=PANEL, text_color=TEXT, font=ctk.CTkFont(family=MONO, size=11),
+            border_width=1, border_color=BORDER, corner_radius=4
+        )
+        self.output_box.pack(fill="both", expand=True)
+
+        summary_frame = ctk.CTkFrame(body, fg_color="transparent")
+        summary_frame.grid(row=0, column=1, sticky="nsew")
+        ctk.CTkLabel(
+            summary_frame, text="summary", font=ctk.CTkFont(family=MONO, size=10),
+            text_color=TEXT_DIM
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.result_badge = ctk.CTkLabel(
+            summary_frame, text="NO RUN YET", font=ctk.CTkFont(family=MONO, size=16, weight="bold"),
+            text_color=TEXT_DIM, fg_color=PANEL, corner_radius=6, height=44
+        )
+        self.result_badge.pack(fill="x", pady=(0, 10))
+
+        self.summary_scroll = ctk.CTkScrollableFrame(
+            summary_frame, fg_color=PANEL, corner_radius=4, border_width=1, border_color=BORDER
+        )
+        self.summary_scroll.pack(fill="both", expand=True)
+        self._summary_empty_label = ctk.CTkLabel(
+            self.summary_scroll, text="waiting on run output...",
+            font=ctk.CTkFont(family=MONO, size=10), text_color=TEXT_DIM
+        )
+        self._summary_empty_label.pack(anchor="w", padx=8, pady=8)
+
+        return p
+
+    # ---- Report page ----
+    def _page_report(self):
+        p = ctk.CTkFrame(self.content, fg_color="transparent")
+        self.report_meta = ctk.CTkLabel(
+            p, text="no run yet", font=ctk.CTkFont(family=MONO, size=11), text_color=TEXT_DIM
+        )
+        self.report_meta.pack(anchor="w", pady=(0, 10))
+
+        self.report_box = ctk.CTkTextbox(
+            p, fg_color=PANEL, text_color=TEXT, font=ctk.CTkFont(family=MONO, size=11),
+            border_width=1, border_color=BORDER, corner_radius=4
+        )
+        self.report_box.pack(fill="both", expand=True)
+        self.report_box.configure(state="disabled")
+        return p
+
+    # ---- Evidence page ----
+    def _page_evidence(self):
+        p = ctk.CTkFrame(self.content, fg_color="transparent")
+
+        top = ctk.CTkFrame(p, fg_color="transparent")
+        top.pack(fill="x", pady=(0, 10))
+        self.evidence_meta = ctk.CTkLabel(
+            top, text="no run yet", font=ctk.CTkFont(family=MONO, size=11), text_color=TEXT_DIM
+        )
+        self.evidence_meta.pack(side="left")
+        ctk.CTkButton(
+            top, text="refresh", command=self.view_logs, width=80, height=26,
+            fg_color="transparent", border_width=1, border_color=BORDER,
+            hover_color=PANEL, text_color=TEXT, font=ctk.CTkFont(family=MONO, size=11)
+        ).pack(side="right")
+
+        self.evidence_box = ctk.CTkTextbox(
+            p, fg_color=PANEL, text_color=TEXT, font=ctk.CTkFont(family=MONO, size=11),
+            border_width=1, border_color=BORDER, corner_radius=4
+        )
+        self.evidence_box.pack(fill="both", expand=True)
+        return p
+
+    # ---------- actions ----------
+    def run_payload(self):
+        payload = self.payload_var.get()
+        if not payload or payload.startswith("("):
+            return
+
+        template = self.run_cmd_entry.get() if hasattr(self, "run_cmd_entry") else ""
+        if not template.strip():
+            self.output_box.insert("end", "[gui] no run command set - check the Setup page\n")
+            return
+
+        self.save_commands()
+        cmd_str = template.replace("{payload}", payload)
+        try:
+            cmd = shlex.split(cmd_str)
+        except ValueError as e:
+            self.output_box.insert("end", f"[gui] could not parse run command: {e}\n")
+            return
+
+        self.run_btn.configure(state="disabled")
+        self.last_run_id = None
+        self.report_path_hint = None
+        self.run_summary = OrderedDict()
+        self.current_result = None
+        self.output_box.delete("1.0", "end")
+        self._set_result_badge(None, text="RUNNING...", color=AMBER)
+        self._refresh_summary_panel()
+        self._reset_box(self.report_box, self.report_meta, "waiting for run to finish...")
+        self._reset_box(self.evidence_box, self.evidence_meta, "waiting for run to finish...")
+
+        threading.Thread(target=self._run_subprocess, args=(cmd,), daemon=True).start()
+        self.show_page("run")
+
+    def _reset_box(self, box, meta_label, meta_text):
+        meta_label.configure(text=meta_text)
+        was_disabled = box.cget("state") == "disabled"
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        if was_disabled:
+            box.configure(state="disabled")
+
+    def _run_subprocess(self, cmd):
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1
+            )
+            for line in proc.stdout:
+                self.output_queue.put(("line", line.rstrip()))
+            proc.wait()
+            self.output_queue.put(("done", None))
+        except FileNotFoundError:
+            self.output_queue.put(("line", f"[gui] could not run: {' '.join(cmd)}"))
+            self.output_queue.put(("done", None))
+        except Exception as e:
+            self.output_queue.put(("line", f"[gui] error: {e}"))
+            self.output_queue.put(("done", None))
+
+    def _poll_queue(self):
+        try:
+            while True:
+                kind, payload = self.output_queue.get_nowait()
+                if kind == "line":
+                    self.output_box.insert("end", payload + "\n")
+                    self.output_box.see("end")
+                    self._scan_line_for_info(payload)
+                elif kind == "done":
+                    self._on_run_finished()
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_queue)
+
+    def _scan_line_for_info(self, line):
+        stripped = line.strip()
+
+        run_match = RUN_ID_RE.search(line)
+        if run_match:
+            self.last_run_id = run_match.group(0)
+
+        m = FINDINGS_RE.search(line)
+        if m:
+            self.run_summary["findings"] = f"{m.group(1)} from {m.group(2)} cases"
+
+        low = stripped.lower()
+        if low in RESULT_COLORS:
+            self.current_result = low
+            self._set_result_badge(low)
+
+        kv = KEYVAL_RE.match(line)
+        if kv:
+            key, val = kv.group(1).strip(), kv.group(2).strip()
+            if "report" in key.lower():
+                self.report_path_hint = val
+            self.run_summary[key] = val
+
+        self._refresh_summary_panel()
+
+    def _set_result_badge(self, result_key, text=None, color=None):
+        if text is None:
+            text = result_key.upper() if result_key else "NO RUN YET"
+        if color is None:
+            color = RESULT_COLORS.get(result_key, TEXT_DIM)
+        self.result_badge.configure(text=text, text_color=color)
+
+    def _refresh_summary_panel(self):
+        for child in self.summary_scroll.winfo_children():
+            child.destroy()
+
+        if not self.run_summary:
+            ctk.CTkLabel(
+                self.summary_scroll, text="waiting on run output...",
+                font=ctk.CTkFont(family=MONO, size=10), text_color=TEXT_DIM
+            ).pack(anchor="w", padx=8, pady=8)
+            return
+
+        for key, val in self.run_summary.items():
+            row = ctk.CTkFrame(self.summary_scroll, fg_color="transparent")
+            row.pack(fill="x", padx=8, pady=3)
+            is_pct = val.strip().endswith("%")
+            ctk.CTkLabel(
+                row, text=key, font=ctk.CTkFont(family=MONO, size=10), text_color=TEXT_DIM
+            ).pack(side="left")
+            ctk.CTkLabel(
+                row, text=val, font=ctk.CTkFont(family=MONO, size=11, weight="bold"),
+                text_color=ACCENT if is_pct else TEXT
+            ).pack(side="right")
+
+    def _on_run_finished(self):
+        self.run_btn.configure(state="normal")
+        if self.current_result is None:
+            self._set_result_badge(None, text="FINISHED - NO RESULT LINE FOUND", color=TEXT_DIM)
+        if self.last_run_id:
+            self.open_report()
+            self.view_logs()
+        else:
+            self.report_meta.configure(text="no run id detected in output")
+            self.evidence_meta.configure(text="no run id detected in output")
+
+    def open_report(self):
+        if not self.last_run_id:
+            return
+        self.report_box.configure(state="normal")
+        self.report_box.delete("1.0", "end")
+
+        candidate = None
+        if self.report_path_hint:
+            hinted = os.path.join(REPO_ROOT, self.report_path_hint)
+            if os.path.isfile(hinted):
+                candidate = hinted
+
+        if candidate is None:
+            reports_dir = os.path.join(REPO_ROOT, "reports")
+            matches = glob.glob(os.path.join(reports_dir, f"*{self.last_run_id}*"))
+            if matches:
+                candidate = matches[0]
+
+        if candidate is None:
+            self.report_meta.configure(text=f"no report file found for {self.last_run_id}")
+            self.report_box.insert("end", "(nothing to show)")
+        else:
+            self.report_meta.configure(text=os.path.relpath(candidate, REPO_ROOT))
+            self.report_box.insert("end", self._read_file(candidate))
+        self.report_box.configure(state="disabled")
+
+    def view_logs(self):
+        if not self.last_run_id:
+            self.evidence_meta.configure(text="no run yet")
+            return
+
+        template = self.log_cmd_entry.get() if hasattr(self, "log_cmd_entry") else ""
+        text = ""
+        used_fallback = False
+
+        if template.strip():
+            cmd_str = template.replace("{run_id}", self.last_run_id)
+            try:
+                cmd = shlex.split(cmd_str)
+                result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
+                text = result.stdout + ("\n" + result.stderr if result.stderr else "")
+            except FileNotFoundError:
+                text = ""
+            except Exception as e:
+                text = f"[gui] error running log command: {e}\n"
+
+        if not text.strip():
+            store_dir = os.path.join(REPO_ROOT, "store")
+            matches = glob.glob(os.path.join(store_dir, f"*{self.last_run_id}*"))
+            if matches:
+                used_fallback = True
+                text = "(minisiem call produced nothing - showing store/ file directly)\n\n"
+                text += self._read_file(matches[0])
+            elif not text:
+                text = "(no log command set, and nothing matching this run id found in store/)"
+
+        self.evidence_meta.configure(
+            text=f"run {self.last_run_id}" + ("  (fallback: store/)" if used_fallback else "")
+        )
+        self.evidence_box.delete("1.0", "end")
+        self.evidence_box.insert("end", text)
+
+    @staticmethod
+    def _read_file(path):
+        try:
+            if os.path.isdir(path):
+                return "\n".join(sorted(os.listdir(path)))
+            with open(path, "r", errors="replace") as f:
+                return f.read()
+        except Exception as e:
+            return f"could not read {path}: {e}"
+
+
+if __name__ == "__main__":
+    app = EDRLabGUI()
+    app.mainloop()
