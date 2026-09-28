@@ -359,32 +359,68 @@ def build_app():  # pragma: no cover - requires a display
             txt.tag_configure(tag, foreground=colour)
         return frame, txt
 
-    _, log_txt = text_tab("Run log")
-    _, report_txt = text_tab("Report")
-    _, ev_txt = text_tab("Evidence")
+    _, log_txt = text_tab("CONSOLE")
+    _, report_txt = text_tab("REPORT")
+    _, ev_txt = text_tab("EVIDENCE")
 
     # ---- setup tab --------------------------------------------------------
     def render_setup():
+        nonlocal env
+
+        # Re-check the environment every time Setup is opened.
+        env = probe_environment()
+
         setup_txt.configure(state="normal")
         setup_txt.delete("1.0", "end")
+
         L = []
         L.append("ENVIRONMENT\n")
         L.append(f"  repo root      {env['root']}\n")
         L.append(f"  python         {env['python']}\n")
-        L.append(f"  PyYAML         {'yes' if env['has_yaml'] else 'NO — pip install -r requirements.txt'}\n")
+        L.append(
+            f"  PyYAML         "
+            f"{'yes' if env['has_yaml'] else 'NO — pip install -r requirements.txt'}\n"
+        )
+
         tr = env.get("transports") or {}
-        L.append(f"  pywinrm        {'yes' if tr.get('pywinrm') else 'no (needed to reach win-victim)'}\n")
-        L.append(f"  paramiko       {'yes' if tr.get('paramiko') else 'no (needed to reach lin-victim)'}\n")
-        L.append(f"  vmrun          {env['tools'].get('vmrun') or 'not on PATH (needed on the hypervisor host)'}\n")
-        L.append(f"  ansible        {env['tools'].get('ansible-playbook') or 'not on PATH'}\n")
-        L.append(f"  LAB_PASS       {'set' if env['lab_pass'] else 'not set (scored runs need it)'}\n")
+        L.append(
+            f"  pywinrm        "
+            f"{'yes' if tr.get('pywinrm') else 'no (needed to reach win-victim)'}\n"
+        )
+        L.append(
+            f"  paramiko       "
+            f"{'yes' if tr.get('paramiko') else 'no (needed to reach lin-victim)'}\n"
+        )
+        L.append(
+            f"  vmrun          "
+            f"{env['tools'].get('vmrun') or 'not on PATH (needed on the hypervisor host)'}\n"
+        )
+        L.append(
+            f"  ansible        "
+            f"{env['tools'].get('ansible-playbook') or 'not on PATH'}\n"
+        )
+        L.append(
+            f"  LAB_PASS       "
+            f"{'set' if env['lab_pass'] else 'not set (scored runs need it)'}\n"
+        )
         L.append(f"  cases          {env['n_cases']} discovered\n")
-        L.append(f"  rules          {env['n_rules']} loaded from rules/ (templates excluded)\n")
+        L.append(
+            f"  rules          {env['n_rules']} loaded from rules/ "
+            f"(templates excluded)\n"
+        )
+
         if env.get("isolation"):
-            L.append(f"  isolation      verified {env['isolation']['age_days']}d ago "
-                     f"({env['isolation']['dir']})\n")
+            L.append(
+                f"  isolation      verified "
+                f"{env['isolation']['age_days']}d ago "
+                f"({env['isolation']['dir']})\n"
+            )
         else:
-            L.append("  isolation      NOT VERIFIED — Preflight (isolation) first\n")
+            L.append(
+                "  isolation      NOT VERIFIED — "
+                "Preflight (isolation) first\n"
+            )
+
         if env.get("missing"):
             L.append("\nMISSING FILES\n")
             for m in env["missing"]:
@@ -394,8 +430,11 @@ def build_app():  # pragma: no cover - requires a display
             L.append("\nBLOCKING\n")
             for p in env["problems"]:
                 L.append(f"  * {p}\n")
+
         if env["warnings"]:
-            L.append("\nWARNINGS (do not block; each one is a caveat on your results)\n")
+            L.append(
+                "\nWARNINGS (do not block; each one is a caveat on your results)\n"
+            )
             for w in env["warnings"]:
                 L.append(f"  * {w}\n")
 
@@ -409,21 +448,39 @@ WHAT EACH BUTTON NEEDS
   Run selected case / Run suite                     hypervisor host, VMs up, LAB_PASS set
 
 FIRST RUN, IN ORDER
-  1. Preflight (static)      — fixes missing assets before they cost you a VM run
-  2. Self-test               — confirms the offline layer
-  3. Replay                  — proves scoring works, still without VMs
-  4. Preflight (isolation)   — writes store/_isolation/<date>/, which scored runs require
-  5. Run suite: baseline     — the 7 benign cases; anything flagged here is your noise floor
+  1. Preflight (static)
+  2. Self-test
+  3. Replay
+  4. Preflight (isolation)
+  5. Run suite: baseline
   6. Run suite: windows, then linux
 
 BEFORE YOU TRUST A VERDICT
-  * A case with no marker file scores inconclusive. That is a broken test, not a
-    sensor gap — open the Evidence tab and read exec.jsonl before blaming a rule.
-  * Replay cannot tell silent from inconclusive. The report says so at the top.
-  * Read the vintage-bias line in every report: this victim build is frozen and
-    its Defender/ASR vintage is a caveat on all of it.
+  * A case with no marker file scores inconclusive.
+  * Replay cannot tell silent from inconclusive.
+  * Read the vintage-bias line in every report.
 """)
+
+        setup_txt.insert("1.0", "".join(L))
         setup_txt.configure(state="disabled")
+        setup_txt.pack(side="left", fill="both", expand=True)
+        def refresh_selected_tab(event=None):
+            selected = nb.select()
+
+            # Compare the actual widget/frame, not the displayed tab name.
+            if selected == str(setup_frame2):
+                render_setup()
+
+            elif selected == str(report_txt.master):
+                open_latest_report()
+
+            elif selected == str(ev_txt.master):
+                load_evidence()
+
+        nb.bind("<<NotebookTabChanged>>", refresh_selected_tab)
+
+
+
 
     setup_frame2 = ttk.Frame(nb)
     nb.add(setup_frame2, text="Setup")
@@ -475,8 +532,7 @@ BEFORE YOU TRUST A VERDICT
                 b.configure(state="normal")
             except tk.TclError:
                 pass
-        # Re-apply the environmental block after re-enabling, or finishing any
-        # command would quietly re-arm a button that cannot possibly work.
+
         if blocked_reason:
             run_case_btn.configure(state="disabled")
             run_suite_btn.configure(state="disabled")
@@ -487,6 +543,19 @@ BEFORE YOU TRUST A VERDICT
             log(f"[gui] {label} finished with exit {rc}\n", "bad")
             set_status(f"{label}: exit {rc}", BAD)
         refresh_reports()
+        refresh_selected_tab()
+
+        try:
+            current_tab = nb.tab(nb.select(), "text")
+            if current_tab == "REPORT":
+                open_latest_report()
+            elif current_tab == "EVIDNCE":
+                load_evidence()
+            elif current_tab == "Setup":
+                render_setup()
+        except tk.TclError:
+            pass
+
 
     runner = Runner(on_line=log, on_done=on_done)
     runner.attach(root)
@@ -583,6 +652,22 @@ BEFORE YOU TRUST A VERDICT
     load_cases()
     render_cases()
 
+
+    def on_tab_changeed(_expct = None):
+        try:
+            tab_id = nb.select()
+            tab_text = nb.tab(tab_id, "text")
+        except tk.TclError:
+            return
+
+        if tab_text == "REPORT":
+            open_latest_report()
+        elif tab_text == "EVIDENCE":
+            load_evidence()
+        elif tab_text == "Setup":
+            render_setup()
+    nb.bind("<<NotebookTabChanged>>", on_tab_changeed)
+        
     # ------------------------------------------------------------------ #
     # reports + evidence
     # ------------------------------------------------------------------ #
@@ -611,7 +696,6 @@ BEFORE YOU TRUST A VERDICT
         report_txt.delete("1.0", "end")
         report_txt.insert("end", open(path).read())
         report_txt.configure(state="disabled")
-        nb.select(1)
         set_status(f"report: {os.path.basename(path)}", FG_DIM)
 
     def load_evidence():
@@ -652,7 +736,7 @@ BEFORE YOU TRUST A VERDICT
                     ev_txt.insert("end", f"   {rel:<26} {p}\n", "dim")
             ev_txt.insert("end", "\n")
         ev_txt.configure(state="disabled")
-        nb.select(2)
+        
 
     # ------------------------------------------------------------------ #
     # actions
@@ -712,9 +796,11 @@ BEFORE YOU TRUST A VERDICT
                 f"This reverts the VM to the baseline snapshot, executes the payload, waits the "
                 f"capture window, then reverts again. It takes minutes, not seconds."):
             return
-        #run([py(), "harness/run_all.py", "--case", sel[0], "--skip-preflight"], f"run {sel[0]}")
-
-        run([py(), "harness/run_all.py", "--case", sel[0]], f"run {sel[0]}")
+        
+        argv = [py(), "harness/run_all.py", "--case", sel[0]]
+        if skip_preflight_var.get():
+            argv.append("--skip-preflight")
+        run(argv, f"run {sel[0]}")
 
     def do_run_suite():
         suite = suite_var.get()
@@ -730,10 +816,11 @@ BEFORE YOU TRUST A VERDICT
                                                 f"Cases run strictly serially and each one reverts "
                                                 f"the VM twice. A full suite takes a while."):
             return
-        #run([py(), "harness/run_all.py", "--suite", suite, "--skip-preflight"], f"run {suite}")
-
-        run([py(), "harness/run_all.py", "--suite", suite], f"run {suite}")
-
+        argv = [py(), "harness/run_all.py", "--suite", suite]
+        if skip_preflight_var.get():
+            argv.append("--skip-preflight")
+        run(argv, f"run {suite}")
+        
     def do_open_root():
         if sys.platform == "darwin":
             subprocess.Popen(["open", ROOT])
@@ -771,7 +858,14 @@ BEFORE YOU TRUST A VERDICT
         ttk.Button(r2, text=label, command=fn).pack(side="left", padx=(0, 6))
 
     r3 = row()
-    
+    skip_preflight_var = tk.BooleanVar(value=False)
+    skip_preflight_cb = ttk.Checkbutton(
+        r3,
+        text="Skip preflight",
+        variable=skip_preflight_var,
+    )
+    skip_preflight_cb.pack(side="left", padx=(0, 12))
+
     run_case_btn = ttk.Button(r3, text="▶  Run selected case", command=do_run_case)
     run_case_btn.pack(side="left", padx=(0, 6))
     run_suite_btn = ttk.Button(r3, text="▶  Run suite", command=do_run_suite)
