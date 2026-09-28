@@ -359,9 +359,9 @@ def build_app():  # pragma: no cover - requires a display
             txt.tag_configure(tag, foreground=colour)
         return frame, txt
 
-    _, log_txt = text_tab("CONSOLE")
-    _, report_txt = text_tab("REPORT")
-    _, ev_txt = text_tab("EVIDENCE")
+    _, log_txt = text_tab("Run log")
+    _, report_txt = text_tab("Report")
+    _, ev_txt = text_tab("Evidence")
 
     # ---- setup tab --------------------------------------------------------
     def render_setup():
@@ -464,24 +464,6 @@ BEFORE YOU TRUST A VERDICT
         setup_txt.insert("1.0", "".join(L))
         setup_txt.configure(state="disabled")
         setup_txt.pack(side="left", fill="both", expand=True)
-        def refresh_selected_tab(event=None):
-            selected = nb.select()
-
-            # Compare the actual widget/frame, not the displayed tab name.
-            if selected == str(setup_frame2):
-                render_setup()
-
-            elif selected == str(report_txt.master):
-                open_latest_report()
-
-            elif selected == str(ev_txt.master):
-                load_evidence()
-
-        nb.bind("<<NotebookTabChanged>>", refresh_selected_tab)
-
-
-
-
     setup_frame2 = ttk.Frame(nb)
     nb.add(setup_frame2, text="Setup")
     setup_txt = tk.Text(setup_frame2, bg=BG2, fg=FG, relief="flat", wrap="word",
@@ -544,17 +526,6 @@ BEFORE YOU TRUST A VERDICT
             set_status(f"{label}: exit {rc}", BAD)
         refresh_reports()
         refresh_selected_tab()
-
-        try:
-            current_tab = nb.tab(nb.select(), "text")
-            if current_tab == "REPORT":
-                open_latest_report()
-            elif current_tab == "EVIDNCE":
-                load_evidence()
-            elif current_tab == "Setup":
-                render_setup()
-        except tk.TclError:
-            pass
 
 
     runner = Runner(on_line=log, on_done=on_done)
@@ -653,21 +624,6 @@ BEFORE YOU TRUST A VERDICT
     render_cases()
 
 
-    def on_tab_changeed(_expct = None):
-        try:
-            tab_id = nb.select()
-            tab_text = nb.tab(tab_id, "text")
-        except tk.TclError:
-            return
-
-        if tab_text == "REPORT":
-            open_latest_report()
-        elif tab_text == "EVIDENCE":
-            load_evidence()
-        elif tab_text == "Setup":
-            render_setup()
-    nb.bind("<<NotebookTabChanged>>", on_tab_changeed)
-        
     # ------------------------------------------------------------------ #
     # reports + evidence
     # ------------------------------------------------------------------ #
@@ -736,6 +692,20 @@ BEFORE YOU TRUST A VERDICT
                     ev_txt.insert("end", f"   {rel:<26} {p}\n", "dim")
             ev_txt.insert("end", "\n")
         ev_txt.configure(state="disabled")
+
+    def refresh_selected_tab(_event=None):
+        try:
+            tab_text = nb.tab(nb.select(), "text")
+        except tk.TclError:
+            return
+        if tab_text == "Report":
+            open_latest_report()
+        elif tab_text == "Evidence":
+            load_evidence()
+        elif tab_text == "Setup":
+            render_setup()
+
+    nb.bind("<<NotebookTabChanged>>", refresh_selected_tab)
         
 
     # ------------------------------------------------------------------ #
