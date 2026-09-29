@@ -491,15 +491,18 @@ def build_app():  # pragma: no cover - requires a display
     dash_cards.pack(fill="x", padx=10, pady=(10, 6))
 
     def stat_card(parent, col):
-        card = tk.Frame(parent, bg=BG2, height=88)
+        card = tk.Frame(parent, bg=BG2, height=94, highlightthickness=1,
+                        highlightbackground=BG3)
         card.pack_propagate(False)
-        card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 8, 0))
+        card.grid(row=0, column=col, sticky="ew",
+                  padx=(0 if col == 0 else 7, 0))
         parent.grid_columnconfigure(col, weight=1)
         value_lbl = tk.Label(card, text="—", bg=BG2, fg=FG,
-                              font=("TkDefaultFont", 20, "bold"))
-        value_lbl.pack(anchor="w", padx=12, pady=(10, 0))
-        caption_lbl = tk.Label(card, text="", bg=BG2, fg=FG_DIM, font=("TkDefaultFont", 9))
-        caption_lbl.pack(anchor="w", padx=12, pady=(0, 10))
+                             font=("TkDefaultFont", 18, "bold"))
+        value_lbl.pack(anchor="w", padx=10, pady=(7, 0))
+        caption_lbl = tk.Label(card, text="", bg=BG2, fg=FG_DIM,
+                               font=("TkDefaultFont", 9), anchor="w", justify="left")
+        caption_lbl.pack(anchor="w", padx=10, pady=(0, 6))
         return value_lbl, caption_lbl
 
     card_cases_val, card_cases_cap = stat_card(dash_cards, 0)
@@ -507,27 +510,58 @@ def build_app():  # pragma: no cover - requires a display
     card_runs_val, card_runs_cap = stat_card(dash_cards, 2)
     card_rate_val, card_rate_cap = stat_card(dash_cards, 3)
 
-    ttk.Label(dash_frame, text="VERDICTS ACROSS ALL RUNS", style="Head.TLabel").pack(
-        anchor="w", padx=10, pady=(8, 4))
-    dash_verdict_frame = ttk.Frame(dash_frame)
-    dash_verdict_frame.pack(fill="x", padx=10, pady=(0, 10))
+    dash_sections = ttk.Frame(dash_frame)
+    dash_sections.pack(fill="both", expand=True, padx=10, pady=(6, 10))
+    dash_sections.columnconfigure(0, weight=1, minsize=165)
+    dash_sections.columnconfigure(2, weight=3, minsize=390)
+    dash_sections.rowconfigure(0, weight=1)
 
-    ttk.Label(dash_frame, text="RECENT RUNS  (⚠ = silent or tamper_positive present)",
-              style="Head.TLabel").pack(anchor="w", padx=10, pady=(4, 4))
+    verdict_panel = ttk.Frame(dash_sections)
+    verdict_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    ttk.Label(verdict_panel, text="CASES", style="Head.TLabel").pack(
+        anchor="w", pady=(0, 2))
+    ttk.Label(verdict_panel, text="all recorded runs", style="Dim.TLabel").pack(
+        anchor="w", pady=(0, 6))
+    dash_verdict_frame = ttk.Frame(verdict_panel)
+    dash_verdict_frame.pack(fill="x")
+
+    ttk.Separator(dash_sections, orient="vertical").grid(row=0, column=1, sticky="ns")
+
+    recent_panel = ttk.Frame(dash_sections)
+    recent_panel.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+    recent_header = ttk.Frame(recent_panel)
+    recent_header.pack(fill="x", pady=(0, 4))
+    ttk.Label(recent_header, text="RECENT RUNS", style="Head.TLabel").pack(side="left")
+    ttk.Label(recent_header, text="attention = silent or tamper_positive",
+              style="Dim.TLabel").pack(side="right")
+    recent_table_frame = ttk.Frame(recent_panel)
+    recent_table_frame.pack(fill="both", expand=True, padx=4)
+    recent_table_frame.grid_columnconfigure(0, weight=1)
+    recent_table_frame.grid_rowconfigure(0, weight=1)
+    style.configure("Dashboard.Treeview", rowheight=26, borderwidth=0,
+                    background=BG2, fieldbackground=BG2, foreground=FG)
+    style.configure("Dashboard.Treeview.Heading", background=BG3, foreground=FG_DIM,
+                    relief="flat", font=("TkDefaultFont", 9, "bold"))
+    style.map("Dashboard.Treeview", background=[("selected", ACCENT)],
+              foreground=[("selected", "#ffffff")])
     runs_tree = ttk.Treeview(
-        dash_frame, columns=("cases", "detected", "issues", "when"),
-        show="tree headings", selectmode="browse", height=12)
-    runs_tree.heading("#0", text="run")
-    runs_tree.heading("cases", text="cases")
-    runs_tree.heading("detected", text="detected")
-    runs_tree.heading("issues", text="issues")
-    runs_tree.heading("when", text="when")
-    runs_tree.column("#0", width=140)
-    runs_tree.column("cases", width=70, anchor="center")
-    runs_tree.column("detected", width=80, anchor="center")
-    runs_tree.column("issues", width=80, anchor="center")
-    runs_tree.column("when", width=160, anchor="center")
-    runs_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        recent_table_frame, columns=("cases", "detected", "issues", "when"),
+        show="tree headings", selectmode="browse", height=9, style="Dashboard.Treeview")
+    runs_tree.heading("#0", text="RUN ID", anchor="center")
+    runs_tree.heading("cases", text="CASES")
+    runs_tree.heading("detected", text="DETECTED")
+    runs_tree.heading("issues", text="ATTENTION")
+    runs_tree.heading("when", text="LAST RUN")
+    runs_tree.column("#0", width=145, minwidth=125, anchor="center", stretch=True)
+    runs_tree.column("cases", width=55, minwidth=50, anchor="center", stretch=True)
+    runs_tree.column("detected", width=70, minwidth=65, anchor="center", stretch=True)
+    runs_tree.column("issues", width=78, minwidth=70, anchor="center", stretch=True)
+    runs_tree.column("when", width=128, minwidth=110, anchor="center", stretch=True)
+    runs_tree.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
+    runs_scroll = ttk.Scrollbar(recent_table_frame, orient="vertical",
+                                command=runs_tree.yview)
+    runs_tree.configure(yscrollcommand=runs_scroll.set)
+    runs_scroll.grid(row=0, column=1, sticky="ns", pady=(0, 5))
     runs_tree.tag_configure("attention", foreground=BAD)
 
     def render_dashboard():
@@ -556,19 +590,26 @@ def build_app():  # pragma: no cover - requires a display
             child.destroy()
         if not counts:
             tk.Label(dash_verdict_frame, text="no runs recorded under store/ yet",
-                     bg=BG, fg=FG_DIM, font=("TkFixedFont", 9)).pack(anchor="w")
+                     bg=BG, fg=FG_DIM, font=("TkFixedFont", 9)).pack(
+                         anchor="w", pady=5)
         else:
             for verdict in ("detected", "logged_no_rule", "silent", "tamper_positive",
                              "inconclusive", "dry_run"):
                 n = counts.get(verdict, 0)
                 if n == 0:
                     continue
-                row = tk.Frame(dash_verdict_frame, bg=BG)
-                row.pack(fill="x", pady=1)
-                tk.Label(row, text=verdict, bg=BG, fg=VERDICT_COLOUR[verdict],
-                         font=("TkFixedFont", 10, "bold"), width=18, anchor="w").pack(side="left")
-                tk.Label(row, text=str(n), bg=BG, fg=FG, font=("TkFixedFont", 10)).pack(
-                    side="left")
+                item = tk.Frame(dash_verdict_frame, bg=BG, height=32)
+                item.pack(fill="x", pady=1)
+                item.pack_propagate(False)
+                tk.Frame(item, bg=VERDICT_COLOUR[verdict], width=3).pack(
+                    side="left", fill="y")
+                tk.Label(item, text=verdict, bg=BG, fg=VERDICT_COLOUR[verdict],
+                         font=("TkDefaultFont", 9, "bold"), anchor="w").pack(
+                             side="left", padx=(8, 4))
+                tk.Label(item, text=str(n), bg=BG, fg=FG,
+                         font=("TkDefaultFont", 10, "bold"), anchor="e").pack(
+                             side="right", padx=8)
+                tk.Frame(item, bg=BG3, height=1).pack(side="bottom", fill="x")
 
         runs_tree.delete(*runs_tree.get_children())
         for r in runs[:20]:
@@ -1303,6 +1344,534 @@ def build_app():  # pragma: no cover - requires a display
             argv.append("--skip-preflight")
         run(argv, f"run {suite}")
 
+    def do_add_payload():
+        if runner.busy:
+            messagebox.showinfo("Runner busy", "Wait for the current action to finish before adding a case.")
+            return
+        try:
+            import yaml
+        except ImportError:
+            messagebox.showerror("PyYAML required", "Install the project requirements before adding cases.")
+            return
+
+        dialog = tk.Toplevel(root)
+        dialog.title("Add Payload")
+        dialog.transient(root)
+        dialog.geometry("900x700")
+        dialog.minsize(760, 600)
+
+        content = ttk.Frame(dialog, padding=12)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(9, weight=1)
+        ttk.Label(
+            content,
+            text=("This copies files into the repository only. Nothing is transferred to a victim "
+                "or executed. "
+                  "Review the command and side-effect expectation below. Running the case "
+                  "later still uses the existing confirmation."),
+            style="Dim.TLabel", wraplength=850, justify="left",
+        ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+
+        os_var = tk.StringVar(value="Windows")
+        case_id_var = tk.StringVar()
+        title_var = tk.StringVar()
+        payload_path_var = tk.StringVar()
+        storage_var = tk.StringVar(value="staging")
+        telemetry_var = tk.StringVar()
+        rules_var = tk.StringVar()
+        summary_var = tk.StringVar(value="Choose a payload file to see its destination.")
+        case_id_auto = {"value": True}
+
+        def form_row(row, label, widget):
+            ttk.Label(content, text=label, style="Dim.TLabel").grid(
+                row=row, column=0, sticky="w", padx=(0, 10), pady=4)
+            widget.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
+
+        def storage_directory():
+            return "variants/staging" if storage_var.get() == "staging" else "payloads"
+
+        def relative_payload_path():
+            filename = os.path.basename(payload_path_var.get().strip())
+            return f"{storage_directory()}/{filename}" if filename else ""
+
+        def remote_paths(case_id, filename):
+            if os_var.get() == "Windows":
+                return (f"C:\\lab\\in\\{filename}",
+                        f"C:\\lab\\artifacts\\{case_id}.marker")
+            return (f"/tmp/{filename}", f"/opt/edrlab/artifacts/{case_id}.marker")
+
+        def generate_yaml_preview():
+            case_id = case_id_var.get().strip()
+            title = title_var.get().strip()
+            source = payload_path_var.get().strip()
+            filename = os.path.basename(source)
+            if not safe_name(case_id):
+                messagebox.showerror("Invalid case ID",
+                                     "Use letters, numbers, dots, underscores, and hyphens only; '..' is not allowed.",
+                                     parent=dialog)
+                return False
+            if not title:
+                messagebox.showerror("Missing title", "Enter a case title.", parent=dialog)
+                return False
+            if (not source or os.path.islink(source) or not os.path.isfile(source)
+                    or not safe_name(filename)):
+                messagebox.showerror("Invalid payload", "Choose a regular, non-symlink file with a safe filename.", parent=dialog)
+                return False
+
+            suite = "windows" if os_var.get() == "Windows" else "linux"
+            transport = "winrm" if suite == "windows" else "ssh"
+            remote_path, marker_path = remote_paths(case_id, filename)
+            data = {
+                "id": case_id,
+                "title": title,
+                "phase": 5,
+                "os": suite,
+                "payload": os.path.splitext(filename)[0],
+                "stages": [
+                    {"name": "stage", "transport": transport,
+                     "copy": {"from": relative_payload_path(), "to": remote_path}},
+                    {"name": "execute", "transport": transport,
+                     "command": default_command(remote_path, marker_path, case_id),
+                     "expect_exit": 0, "sleep_after_s": 4},
+                ],
+                "expect_side_effect": {"type": "file", "path": marker_path},
+                "assert": {"logged_if_any": [s.strip() for s in telemetry_var.get().split(",")
+                                               if s.strip()],
+                           "detected_rule": [s.strip() for s in rules_var.get().split(",")
+                                             if s.strip()],
+                           "max_findings": 8},
+                "teardown": {"revert_snapshot": "baseline-clean",
+                             "remove_paths": [remote_path, marker_path]},
+                "notes": ("Review the command and marker behavior for this payload. "
+                          "Saving does not execute or transfer it to a victim."),
+            }
+            yaml_text.configure(state="normal")
+            yaml_text.delete("1.0", "end")
+            yaml_text.insert("1.0", yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+            return True
+
+        def suggested_case_id(os_name, source):
+            prefix = "W" if os_name == "Windows" else "L"
+            used = []
+            for path in probe_cases():
+                stem = os.path.splitext(os.path.basename(path))[0]
+                match = re.match(rf"^{prefix}(\d+)-", stem)
+                if match:
+                    used.append(int(match.group(1)))
+            number = max(used, default=0) + 1
+            stem = os.path.splitext(os.path.basename(source))[0].lower()
+            slug = re.sub(r"[^a-z0-9]+", "-", stem).strip("-") or "payload"
+            return f"{prefix}{number:02d}-{slug[:48].rstrip('-')}"
+
+        def default_command(remote_path, marker_path, case_id):
+            extension = os.path.splitext(payload_path_var.get())[1].lower()
+            if os_var.get() == "Windows":
+                quoted = f'"{remote_path}"'
+                if extension == ".py":
+                    return (f'"C:\\Python312\\python.exe" {quoted} --case {case_id} '
+                            f'--marker "{marker_path}"')
+                if extension in (".cmd", ".bat"):
+                    return f'call {quoted} --case {case_id} --marker "{marker_path}"'
+                if extension == ".ps1":
+                    return (f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File {quoted} '
+                            f'-Case {case_id} -Marker "{marker_path}"')
+                if extension == ".js":
+                    return f'wscript.exe //B {quoted}'
+                return f'{quoted} --case {case_id} --marker "{marker_path}"'
+            quoted = shlex.quote(remote_path)
+            if extension == ".py":
+                return f"python3 {quoted} --case {case_id} --marker {shlex.quote(marker_path)}"
+            if extension == ".sh":
+                return f"sh {quoted} --case {case_id} --marker {shlex.quote(marker_path)}"
+            return (f"chmod +x {quoted} && {quoted} --case {case_id} "
+                    f"--marker {shlex.quote(marker_path)}")
+
+        def update_summary(*_):
+            filename = os.path.basename(payload_path_var.get().strip())
+            case_id = case_id_var.get().strip()
+            suite = "windows" if os_var.get() == "Windows" else "linux"
+            if filename and case_id:
+                summary_var.set(
+                    f"Payload: {relative_payload_path()}    "
+                    f"Case: harness/cases/{suite}/{case_id}.yml")
+            else:
+                summary_var.set("Choose a payload file and enter a case ID to see destinations.")
+
+        for variable in (os_var, case_id_var, payload_path_var, storage_var):
+            variable.trace_add("write", update_summary)
+
+        def safe_name(value):
+            return (bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value))
+                    and value not in (".", "..") and ".." not in value)
+
+        def generate_yaml_preview():
+            case_id = case_id_var.get().strip()
+            title = title_var.get().strip()
+            source = payload_path_var.get().strip()
+            filename = os.path.basename(source)
+            if not safe_name(case_id):
+                messagebox.showerror("Invalid case ID",
+                                     "Use letters, numbers, dots, underscores, and hyphens only; '..' is not allowed.",
+                                     parent=dialog)
+                return False
+            if not title:
+                messagebox.showerror("Missing title", "Enter a case title.", parent=dialog)
+                return False
+            if (not source or os.path.islink(source) or not os.path.isfile(source)
+                    or not safe_name(filename)):
+                messagebox.showerror(
+                    "Invalid payload",
+                    "Choose a regular, non-symlink file with a filename containing only letters, numbers, dots, underscores, or hyphens.",
+                    parent=dialog)
+                return False
+
+            suite = "windows" if os_var.get() == "Windows" else "linux"
+            transport = "winrm" if suite == "windows" else "ssh"
+            remote_path, marker_path = remote_paths(case_id, filename)
+            data = {
+                "id": case_id,
+                "title": title,
+                "phase": 5,
+                "os": suite,
+                "payload": os.path.splitext(filename)[0],
+                "stages": [
+                    {"name": "stage", "transport": transport,
+                     "copy": {"from": relative_payload_path(), "to": remote_path}},
+                    {"name": "execute", "transport": transport,
+                     "command": default_command(remote_path, marker_path, case_id),
+                     "expect_exit": 0, "sleep_after_s": 4},
+                ],
+                "expect_side_effect": {"type": "file", "path": marker_path},
+                "assert": {"logged_if_any": [s.strip() for s in telemetry_var.get().split(",")
+                                               if s.strip()],
+                           "detected_rule": [s.strip() for s in rules_var.get().split(",")
+                                             if s.strip()],
+                           "max_findings": 8},
+                "teardown": {"revert_snapshot": "baseline-clean",
+                             "remove_paths": [remote_path, marker_path]},
+                "notes": ("Review the command and marker behavior for this payload. "
+                          "Saving does not execute or transfer it to a victim."),
+            }
+            yaml_text.configure(state="normal")
+            yaml_text.delete("1.0", "end")
+            yaml_text.insert("1.0", yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+            return True
+
+        def browse_payload():
+            source = filedialog.askopenfilename(parent=dialog, title="Choose payload file",
+                                                initialdir=ROOT)
+            if not source:
+                return
+            payload_path_var.set(source)
+            filename = os.path.basename(source)
+            if not title_var.get():
+                title_var.set(os.path.splitext(filename)[0].replace("_", " "))
+            if not case_id_var.get():
+                case_id_var.set(suggested_case_id(os_var.get(), source))
+            update_summary()
+            generate_yaml_preview()
+
+        os_menu = ttk.Combobox(content, textvariable=os_var, state="readonly",
+                               values=("Windows", "Linux"), width=12)
+        form_row(1, "Operating system", os_menu)
+        form_row(2, "Case ID", ttk.Entry(content, textvariable=case_id_var))
+        form_row(3, "Case title", ttk.Entry(content, textvariable=title_var))
+
+        payload_row = ttk.Frame(content)
+        payload_row.columnconfigure(0, weight=1)
+        ttk.Entry(payload_row, textvariable=payload_path_var).grid(
+            row=0, column=0, sticky="ew")
+        ttk.Button(payload_row, text="Browse…", command=browse_payload).grid(
+            row=0, column=1, padx=(6, 0))
+        form_row(4, "Payload file", payload_row)
+
+        storage_row = ttk.Frame(content)
+        ttk.Radiobutton(storage_row, text="Case-specific staging", value="staging",
+                        variable=storage_var, command=update_summary).pack(side="left")
+        ttk.Radiobutton(storage_row, text="Reusable payload", value="payloads",
+                        variable=storage_var, command=update_summary).pack(
+                            side="left", padx=(12, 0))
+        form_row(5, "Store as", storage_row)
+        form_row(6, "Expected telemetry (comma-separated)",
+                 ttk.Entry(content, textvariable=telemetry_var))
+        form_row(7, "Detection rule IDs (optional)", ttk.Entry(content, textvariable=rules_var))
+        ttk.Label(content, textvariable=summary_var, style="Dim.TLabel").grid(
+            row=8, column=0, columnspan=3, sticky="w", pady=(4, 6))
+
+        yaml_frame = ttk.Frame(content)
+        yaml_frame.grid(row=9, column=0, columnspan=3, sticky="nsew")
+        yaml_frame.columnconfigure(0, weight=1)
+        yaml_frame.rowconfigure(1, weight=1)
+        yaml_toolbar = ttk.Frame(yaml_frame)
+        yaml_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Label(yaml_toolbar, text="CASE YAML (review/edit before saving)",
+                  style="Head.TLabel").pack(side="left")
+        ttk.Button(yaml_toolbar, text="Generate YAML", command=generate_yaml_preview).pack(
+            side="right")
+        yaml_text = tk.Text(yaml_frame, height=14, bg=BG2, fg=FG,
+                            insertbackground=FG, relief="flat", wrap="none",
+                            font=("TkFixedFont", 9), padx=8, pady=7,
+                            selectbackground=ACCENT)
+        yaml_scroll = ttk.Scrollbar(yaml_frame, orient="vertical", command=yaml_text.yview)
+        yaml_text.configure(yscrollcommand=yaml_scroll.set)
+        yaml_text.grid(row=1, column=0, sticky="nsew")
+        yaml_scroll.grid(row=1, column=1, sticky="ns")
+        yaml_text.insert("1.0", "Choose the OS and payload, then generate a case YAML.\n")
+
+        def safe_repo_path(relative):
+            root_path = os.path.realpath(ROOT)
+            candidate = os.path.realpath(os.path.join(root_path, relative))
+            try:
+                return candidate if os.path.commonpath((root_path, candidate)) == root_path else None
+            except ValueError:
+                return None
+
+        def validate_case_yaml(data, case_id, suite, planned_payload):
+            if not isinstance(data, dict):
+                raise ValueError("Case YAML must contain a mapping.")
+            if data.get("id") != case_id:
+                raise ValueError("YAML id must exactly match the case ID / filename stem.")
+            if data.get("os") != suite:
+                raise ValueError(f"YAML os must be {suite!r}.")
+            for key in ("title", "phase", "payload", "stages", "expect_side_effect", "assert"):
+                if key not in data:
+                    raise ValueError(f"Missing case field: {key}")
+            if not isinstance(data["title"], str) or not data["title"].strip():
+                raise ValueError("title must be a non-empty string.")
+            if not isinstance(data["phase"], int) or isinstance(data["phase"], bool):
+                raise ValueError("phase must be an integer.")
+            if not isinstance(data["payload"], str) or not data["payload"].strip():
+                raise ValueError("payload must be a non-empty string.")
+            if not isinstance(data["stages"], list) or not data["stages"]:
+                raise ValueError("stages must be a non-empty list.")
+            transport = "winrm" if suite == "windows" else "ssh"
+            copy_sources = []
+            has_command = False
+            for index, stage in enumerate(data["stages"], 1):
+                if not isinstance(stage, dict) or stage.get("transport") != transport:
+                    raise ValueError(f"Every stage must use {transport!r} transport.")
+                has_command = has_command or bool(stage.get("command"))
+                copy_spec = stage.get("copy")
+                if copy_spec:
+                    if not isinstance(copy_spec, dict) or not copy_spec.get("from") or not copy_spec.get("to"):
+                        raise ValueError(f"Stage {index} copy requires from and to.")
+                    local_rel = str(copy_spec["from"])
+                    if (os.path.isabs(local_rel) or "\\" in local_rel
+                            or local_rel.startswith("../") or "/../" in f"/{local_rel}/"):
+                        raise ValueError(f"Unsafe copy.from path: {local_rel}")
+                    local_path = safe_repo_path(local_rel)
+                    if local_path is None:
+                        raise ValueError(f"copy.from escapes the repository: {local_rel}")
+                    if os.path.islink(local_path):
+                        raise ValueError(f"copy.from cannot be a symlink: {local_rel}")
+                    remote_path = str(copy_spec["to"]).replace("\\", "/")
+                    remote_parts = remote_path.split("/")
+                    if ".." in remote_parts:
+                        raise ValueError(f"Unsafe victim copy.to path: {copy_spec['to']}")
+                    if suite == "windows":
+                        if not remote_path.lower().startswith("c:/lab/in/"):
+                            raise ValueError("Windows copy.to paths must stay under C:\\lab\\in\\.")
+                    elif not remote_path.startswith("/tmp/"):
+                        raise ValueError("Linux copy.to paths must stay under /tmp/.")
+                    copy_sources.append((local_rel, local_path))
+            if not has_command:
+                raise ValueError("At least one stage needs a command to execute the payload.")
+            if planned_payload not in [source for source, _path in copy_sources]:
+                raise ValueError("A stage must copy the selected payload into the victim.")
+            if not isinstance(data["expect_side_effect"], dict) or data["expect_side_effect"].get("type") not in ("file", "connection", "none"):
+                raise ValueError("expect_side_effect.type must be file, connection, or none.")
+            if (data["expect_side_effect"].get("type") == "file"
+                    and not data["expect_side_effect"].get("path")):
+                raise ValueError("A file side effect requires expect_side_effect.path.")
+            assertion = data["assert"]
+            if not isinstance(assertion, dict):
+                raise ValueError("assert must be a mapping.")
+            for key in ("logged_if_any", "detected_rule"):
+                if (key not in assertion or not isinstance(assertion[key], list)
+                        or any(not isinstance(value, str) for value in assertion[key])):
+                    raise ValueError(f"assert.{key} must be a list of strings.")
+            return copy_sources, assertion.get("detected_rule", [])
+
+        def known_rule_ids():
+            ids = set()
+            for path in env["rule_files"]:
+                try:
+                    with open(path, encoding="utf-8") as stream:
+                        for rule in yaml.safe_load_all(stream):
+                            if isinstance(rule, dict) and rule.get("id"):
+                                ids.add(str(rule["id"]))
+                except (OSError, yaml.YAMLError):
+                    continue
+            return ids
+
+        def save_payload_case():
+            source = payload_path_var.get().strip()
+            case_id = case_id_var.get().strip()
+            title = title_var.get().strip()
+            suite = "windows" if os_var.get() == "Windows" else "linux"
+            filename = os.path.basename(source)
+            if not safe_name(case_id):
+                messagebox.showerror("Invalid case ID", "Use letters, numbers, dots, underscores, and hyphens only; '..' is not allowed.", parent=dialog)
+                return
+            if not title:
+                messagebox.showerror("Missing title", "Enter a case title.", parent=dialog)
+                return
+            if (not source or os.path.islink(source) or not os.path.isfile(source)
+                    or not safe_name(filename)):
+                messagebox.showerror("Invalid payload", "Choose a regular, non-symlink file with a safe filename.", parent=dialog)
+                return
+
+            payload_rel = relative_payload_path()
+            case_rel = f"harness/cases/{suite}/{case_id}.yml"
+            payload_dest = safe_repo_path(payload_rel)
+            case_dest = safe_repo_path(case_rel)
+            if payload_dest is None or case_dest is None:
+                messagebox.showerror("Unsafe destination", "A destination resolves outside the repository.", parent=dialog)
+                return
+            if os.path.lexists(payload_dest) or os.path.lexists(case_dest):
+                messagebox.showerror("File exists", "The payload or case destination already exists; nothing was overwritten.", parent=dialog)
+                return
+
+            try:
+                for path in probe_cases():
+                    with open(path, encoding="utf-8") as stream:
+                        existing = yaml.safe_load(stream)
+                    if isinstance(existing, dict) and existing.get("id") == case_id:
+                        raise ValueError(f"Case ID {case_id!r} is already used.")
+                yaml_content = yaml_text.get("1.0", "end-1c")
+                case_data = yaml.safe_load(yaml_content)
+                copy_sources, rule_ids = validate_case_yaml(case_data, case_id, suite, payload_rel)
+            except (OSError, yaml.YAMLError, ValueError) as exc:
+                messagebox.showerror("Invalid case YAML", str(exc), parent=dialog)
+                return
+
+            missing_rules = sorted(set(rule_ids) - known_rule_ids())
+            if missing_rules and not messagebox.askyesno(
+                    "Rule IDs not found",
+                    "These rule IDs must be created separately:\n\n" + "\n".join(missing_rules)
+                    + "\n\nSave the case anyway?", parent=dialog):
+                return
+
+            root_path = os.path.realpath(ROOT)
+            if any(os.path.commonpath((root_path, os.path.realpath(os.path.dirname(path)))) != root_path
+                   or not os.path.isdir(os.path.dirname(path)) for path in (payload_dest, case_dest)):
+                messagebox.showerror("Destination unavailable", "Target folders must exist inside the repository.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                    "Confirm Add Payload",
+                    f"Create these repository files?\n\n{payload_rel}\n{case_rel}\n\n"
+                    "The payload is copied locally into the repository only. It will not be "
+                    "transferred to a victim or executed.", parent=dialog):
+                return
+
+            created_payload = False
+            created_case = False
+            try:
+                if os.path.islink(source) or not os.path.isfile(source):
+                    raise ValueError("Selected payload is no longer a regular file.")
+                with open(source, "rb") as input_file:
+                    payload_fd = os.open(payload_dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                    created_payload = True
+                    with os.fdopen(payload_fd, "wb") as output_file:
+                        shutil.copyfileobj(input_file, output_file)
+                for local_rel, local_path in copy_sources:
+                    if os.path.islink(local_path) or not os.path.isfile(local_path):
+                        raise ValueError(f"copy.from does not exist as a regular file: {local_rel}")
+                case_fd = os.open(case_dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                created_case = True
+                with os.fdopen(case_fd, "w", encoding="utf-8", newline="\n") as output_file:
+                    output_file.write(yaml_content.rstrip() + "\n")
+            except (OSError, ValueError) as exc:
+                if created_case:
+                    try:
+                        os.unlink(case_dest)
+                    except OSError:
+                        pass
+                if created_payload:
+                    try:
+                        os.unlink(payload_dest)
+                    except OSError:
+                        pass
+                messagebox.showerror("Add Payload failed", str(exc), parent=dialog)
+                return
+
+            env["case_files"] = probe_cases()
+            env["n_cases"] = len(env["case_files"])
+            search_var.set("")
+            suite_var.set(suite)
+            reload_case_data()
+            if case_tree.exists(case_id):
+                case_tree.selection_set(case_id)
+                case_tree.focus(case_id)
+                case_tree.see(case_id)
+                case_tree.event_generate("<<TreeviewSelect>>")
+            render_dashboard()
+            set_status(f"Added {case_id}", OK)
+            dialog.destroy()
+            messagebox.showinfo("Payload added", f"Created:\n{payload_rel}\n{case_rel}", parent=root)
+
+        def refresh_case_id_for_os(_event=None):
+            if payload_path_var.get() and case_id_auto["value"]:
+                case_id_var.set(suggested_case_id(os_var.get(), payload_path_var.get()))
+            update_summary()
+
+        def mark_case_id_manual(_event=None):
+            case_id_auto["value"] = False
+
+        os_menu = ttk.Combobox(content, textvariable=os_var, state="readonly",
+                               values=("Windows", "Linux"), width=12)
+        form_row(1, "Operating system", os_menu)
+        os_menu.bind("<<ComboboxSelected>>", refresh_case_id_for_os)
+        id_entry = ttk.Entry(content, textvariable=case_id_var)
+        form_row(2, "Case ID", id_entry)
+        id_entry.bind("<KeyRelease>", mark_case_id_manual)
+        form_row(3, "Case title", ttk.Entry(content, textvariable=title_var))
+
+        payload_row = ttk.Frame(content)
+        payload_row.columnconfigure(0, weight=1)
+        ttk.Entry(payload_row, textvariable=payload_path_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(payload_row, text="Browse…", command=browse_payload).grid(
+            row=0, column=1, padx=(6, 0))
+        form_row(4, "Payload file", payload_row)
+
+        storage_row = ttk.Frame(content)
+        ttk.Radiobutton(storage_row, text="Case-specific staging", value="staging",
+                        variable=storage_var, command=update_summary).pack(side="left")
+        ttk.Radiobutton(storage_row, text="Reusable payload", value="payloads",
+                        variable=storage_var, command=update_summary).pack(side="left", padx=(12, 0))
+        form_row(5, "Store as", storage_row)
+        form_row(6, "Expected telemetry (comma-separated)", ttk.Entry(content, textvariable=telemetry_var))
+        form_row(7, "Detection rule IDs (optional)", ttk.Entry(content, textvariable=rules_var))
+        ttk.Label(content, textvariable=summary_var, style="Dim.TLabel").grid(
+            row=8, column=0, columnspan=3, sticky="w", pady=(4, 6))
+
+        yaml_frame = ttk.Frame(content)
+        yaml_frame.grid(row=9, column=0, columnspan=3, sticky="nsew")
+        yaml_frame.columnconfigure(0, weight=1)
+        yaml_frame.rowconfigure(1, weight=1)
+        yaml_toolbar = ttk.Frame(yaml_frame)
+        yaml_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Label(yaml_toolbar, text="CASE YAML (review/edit before saving)",
+                  style="Head.TLabel").pack(side="left")
+        ttk.Button(yaml_toolbar, text="Generate YAML", command=generate_yaml_preview).pack(side="right")
+        yaml_text = tk.Text(yaml_frame, height=14, bg=BG2, fg=FG, insertbackground=FG,
+                            relief="flat", wrap="none", font=("TkFixedFont", 9),
+                            padx=8, pady=7, selectbackground=ACCENT)
+        yaml_scroll = ttk.Scrollbar(yaml_frame, orient="vertical", command=yaml_text.yview)
+        yaml_text.configure(yscrollcommand=yaml_scroll.set)
+        yaml_text.grid(row=1, column=0, sticky="nsew")
+        yaml_scroll.grid(row=1, column=1, sticky="ns")
+        yaml_text.insert("1.0", "Choose the OS and payload, then generate a case YAML.\n")
+
+        ttk.Button(content, text="Cancel", command=dialog.destroy).grid(
+            row=10, column=1, sticky="e", pady=(8, 0))
+        ttk.Button(content, text="Add Payload", command=save_payload_case).grid(
+            row=10, column=2, sticky="e", padx=(8, 0), pady=(8, 0))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
+        dialog.focus_set()
+
     def do_open_root():
         if sys.platform == "darwin":
             subprocess.Popen(["open", ROOT])
@@ -1544,10 +2113,10 @@ def build_app():  # pragma: no cover - requires a display
             ("Replay evidence…", do_replay),
             ("Dry run", do_dry_run),
             ("List cases", do_list),
+            ("Add Payload…", do_add_payload),
             ("Refresh dashboard", render_dashboard),
             ("Reload cases", reload_case_data))):
-        page = {"Refresh dashboard": "Dashboard", "Reload cases": "Cases"}.get(
-            label, "Run log")
+        page = {"Refresh dashboard": "Dashboard", "Reload cases": "Cases"}.get(label)
         add_action(evidence_group, label, route_action(fn, page),
                    2 + index // 2, index % 2)
 
