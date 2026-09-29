@@ -388,8 +388,33 @@ def build_app():  # pragma: no cover - requires a display
     left.pack(side="left", fill="y", padx=(0, 10))
     left.pack_propagate(False)
 
-    ttk.Label(left, text="CASES", style="Head.TLabel").pack(anchor="w")
-    filt = ttk.Frame(left)
+    case_header = ttk.Frame(left)
+    case_header.pack(fill="x")
+    case_title = ttk.Label(case_header, text="CASES", style="Head.TLabel")
+    case_title.pack(side="left", fill="x", expand=True)
+    case_panel_expanded = True
+
+    def toggle_case_panel():
+        nonlocal case_panel_expanded
+        case_panel_expanded = not case_panel_expanded
+        if case_panel_expanded:
+            left.configure(width=350)
+            case_title.pack(side="left", fill="x", expand=True)
+            case_content.pack(fill="both", expand=True)
+            case_panel_toggle.configure(text="‹")
+        else:
+            case_content.pack_forget()
+            case_title.pack_forget()
+            left.configure(width=34)
+            case_panel_toggle.configure(text="›")
+
+    case_panel_toggle = ttk.Button(case_header, text="‹", width=2,
+                                   command=toggle_case_panel)
+    case_panel_toggle.pack(side="right", padx=(4, 0))
+
+    case_content = ttk.Frame(left)
+    case_content.pack(fill="both", expand=True)
+    filt = ttk.Frame(case_content)
     filt.pack(fill="x", pady=(6, 6))
     suite_var = tk.StringVar(value="all")
     ttk.Combobox(filt, textvariable=suite_var, state="readonly", width=10,
@@ -398,7 +423,8 @@ def build_app():  # pragma: no cover - requires a display
     ttk.Entry(filt, textvariable=search_var, width=16).pack(side="left", padx=(6, 0), fill="x",
                                                              expand=True)
 
-    case_tree = ttk.Treeview(left, columns=("suite", "phase", "last"), show="tree headings",
+    case_tree = ttk.Treeview(case_content, columns=("suite", "phase", "last"),
+                              show="tree headings",
                               selectmode="browse")
     case_tree.heading("#0", text="case")
     case_tree.heading("suite", text="suite")
@@ -412,7 +438,7 @@ def build_app():  # pragma: no cover - requires a display
     for verdict, colour in VERDICT_COLOUR.items():
         case_tree.tag_configure(f"v_{verdict}", foreground=colour)
 
-    case_info = tk.Text(left, height=7, bg=BG2, fg=FG_DIM, insertbackground=FG,
+    case_info = tk.Text(case_content, height=7, bg=BG2, fg=FG_DIM, insertbackground=FG,
                          relief="flat", wrap="word", font=("TkFixedFont", 9), padx=8, pady=6)
     case_info.pack(fill="x", pady=(6, 0))
     case_info.insert("end", "Case Details:\nSelect a case to view its details.")
@@ -429,13 +455,11 @@ def build_app():  # pragma: no cover - requires a display
     # after the widgets exist) share the same StringVars/Comboboxes.
     report_run_var = tk.StringVar()
     ev_run_var = tk.StringVar()
-    ev_case_var = tk.StringVar()
     analysis_run_var = tk.StringVar()
     analysis_case_var = tk.StringVar()
     analysis_source_var = tk.StringVar()
     report_run_menu = None  # assigned inside the Report tab's header()
     ev_run_menu = None      # assigned inside the Evidence tab's header()
-    ev_case_menu = None
 
     def text_tab(title, header=None):
         """header(frame), if given, is called (and packed) before the text
@@ -467,7 +491,8 @@ def build_app():  # pragma: no cover - requires a display
     dash_cards.pack(fill="x", padx=10, pady=(10, 6))
 
     def stat_card(parent, col):
-        card = tk.Frame(parent, bg=BG2)
+        card = tk.Frame(parent, bg=BG2, height=88)
+        card.pack_propagate(False)
         card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 8, 0))
         parent.grid_columnconfigure(col, weight=1)
         value_lbl = tk.Label(card, text="—", bg=BG2, fg=FG,
@@ -508,7 +533,8 @@ def build_app():  # pragma: no cover - requires a display
     def render_dashboard():
         runs = scan_all_runs()
         counts = tally_verdicts(runs)
-        total_scored = sum(counts.values())
+        detection_tests = sum(counts.get(verdict, 0)
+                      for verdict in ("detected", "logged_no_rule", "silent"))
         detected = counts.get("detected", 0)
 
         card_cases_val.configure(text=str(env["n_cases"]))
@@ -517,13 +543,14 @@ def build_app():  # pragma: no cover - requires a display
         card_rules_cap.configure(text="rules loaded")
         card_runs_val.configure(text=str(len(runs)))
         card_runs_cap.configure(text="runs recorded")
-        if total_scored:
-            rate = 100 * detected / total_scored
-            card_rate_val.configure(text=f"{rate:.0f}%", fg=OK if rate >= 50 else BAD)
-            card_rate_cap.configure(text=f"detected ({total_scored} scored cases)")
+        if detection_tests:
+            rate = 100 * detected / detection_tests
+            card_rate_val.configure(text=f"{rate:.0f}%", fg=FG)
+            card_rate_cap.configure(
+                text=f"detection rate\n{detected} / {detection_tests} detection tests")
         else:
             card_rate_val.configure(text="—", fg=FG)
-            card_rate_cap.configure(text="no scored cases yet")
+            card_rate_cap.configure(text="no detection tests yet")
 
         for child in dash_verdict_frame.winfo_children():
             child.destroy()
@@ -573,15 +600,12 @@ def build_app():  # pragma: no cover - requires a display
         report_run_menu.pack(side="left", padx=(6, 0))
 
     def _evidence_header(frame):
-        nonlocal ev_run_menu, ev_case_menu
+        nonlocal ev_run_menu
         bar = ttk.Frame(frame)
         bar.pack(fill="x", padx=10, pady=(8, 4))
         ttk.Label(bar, text="run:", style="Dim.TLabel").pack(side="left")
         ev_run_menu = ttk.Combobox(bar, textvariable=ev_run_var, state="readonly", width=20)
         ev_run_menu.pack(side="left", padx=(6, 0))
-        ttk.Label(bar, text="case:", style="Dim.TLabel").pack(side="left", padx=(12, 0))
-        ev_case_menu = ttk.Combobox(bar, textvariable=ev_case_var, state="readonly", width=24)
-        ev_case_menu.pack(side="left", padx=(6, 0))
 
     report_frame, report_txt = text_tab("Report", header=_report_header)
     _, ev_txt = text_tab("Evidence", header=_evidence_header)
@@ -1001,106 +1025,35 @@ def build_app():  # pragma: no cover - requires a display
         run_ids = [r["run_id"] for r in runs]
         ev_run_menu.configure(values=run_ids or ["(none yet)"])
         if not runs:
-            ev_case_menu.configure(values=[])
-            ev_case_var.set("")
             ev_txt.insert("end", "No runs recorded yet under store/.\n")
             ev_txt.configure(state="disabled")
             return
         if select_latest or ev_run_var.get() not in run_ids:
             ev_run_var.set(run_ids[0])
         run = next(r for r in runs if r["run_id"] == ev_run_var.get())
+        ev_txt.insert("end", f"RUN {run['run_id']}\n" + "=" * 60 + "\n\n")
         cases_dir = os.path.join(run["dir"], "cases")
         if not os.path.isdir(cases_dir):
-            ev_case_menu.configure(values=[])
-            ev_case_var.set("")
-            ev_txt.insert("end", f"RUN {run['run_id']}\n\nno cases/ directory\n")
+            ev_txt.insert("end", "no cases/ directory\n")
             ev_txt.configure(state="disabled")
             return
-        case_ids = sorted(cid for cid in os.listdir(cases_dir)
-                          if os.path.isdir(os.path.join(cases_dir, cid)))
-        ev_case_menu.configure(values=case_ids or ["(none)"])
-        if not case_ids:
-            ev_case_var.set("")
-            ev_txt.insert("end", f"RUN {run['run_id']}\n\nNo cases recorded.\n")
-            ev_txt.configure(state="disabled")
-            return
-        if ev_case_var.get() not in case_ids:
-            ev_case_var.set(case_ids[0])
-        cid = ev_case_var.get()
-        cdir = os.path.join(cases_dir, cid)
-        score = {}
-        score_path = os.path.join(cdir, "score.json")
-        try:
-            with open(score_path, encoding="utf-8") as stream:
-                loaded = json.load(stream)
-            if isinstance(loaded, dict):
-                score = loaded
-        except (OSError, ValueError):
-            pass
-        verdict_data = run["verdicts"].get(cid, {})
-        verdict = score.get("verdict", verdict_data.get("verdict", "?"))
-        reason = score.get("reason", verdict_data.get("reason", "")) or "Not available"
-        normalized_path = os.path.join(cdir, "normalized", "events.jsonl")
-        findings_path = os.path.join(cdir, "findings.jsonl")
-        exec_path = os.path.join(cdir, "exec.jsonl")
-        event_count = score.get("event_count")
-        if event_count is None and os.path.isfile(normalized_path):
-            try:
-                with open(normalized_path, encoding="utf-8", errors="replace") as stream:
-                    event_count = sum(1 for line in stream if line.strip())
-            except OSError:
-                event_count = "Not available"
-        if event_count is None:
-            event_count = 0
-        finding_count = score.get("finding_count")
-        if finding_count is None and os.path.isfile(findings_path):
-            try:
-                with open(findings_path, encoding="utf-8", errors="replace") as stream:
-                    finding_count = sum(1 for line in stream if line.strip())
-            except OSError:
-                finding_count = "Not available"
-        if finding_count is None:
-            finding_count = 0
-
-        telemetry = score.get("telemetry_logged")
-        telemetry_text = "yes" if telemetry is True else "no" if telemetry is False else "Not available"
-        sensor_health = score.get("sensor_health") or "Not available"
-        side_effect = score.get("side_effect_observed")
-        side_effect_text = ("yes" if side_effect is True else "no" if side_effect is False
-                            else "Not available")
-        problems = score.get("collection_problems")
-        if isinstance(problems, list):
-            problem_lines = (["No collection problems"] if not problems else
-                             [f"{index}. {problem}" for index, problem in enumerate(problems, 1)])
-        else:
-            problem_lines = ["Not recorded for this run (historical data predates capture)."]
-
-        ev_txt.insert("end", f"RUN: {run['run_id']}    CASE: {cid}\n\n")
-        ev_txt.insert("end", "Collection status\n-----------------\n")
-        ev_txt.insert("end", f"Events:        {event_count}\n")
-        ev_txt.insert("end", f"Telemetry:     {telemetry_text}\n")
-        ev_txt.insert("end", f"Sensor health: {sensor_health}\n")
-        ev_txt.insert("end", f"Side effects:  {side_effect_text}\n\n")
-        ev_txt.insert("end", "Collection problems\n-------------------\n")
-        ev_txt.insert("end", "\n".join(problem_lines) + "\n\n")
-        ev_txt.insert("end", "Detection findings\n------------------\n")
-        ev_txt.insert("end", f"{finding_count} findings\n")
-        ev_txt.insert("end", f"Verdict: {verdict}\n")
-        ev_txt.insert("end", f"Reason: {reason}\n\n")
-        ev_txt.insert("end", "Evidence files\n--------------\n")
-        found_files = False
-        for rel, path in (("exec.jsonl", exec_path),
-                          ("normalized/events.jsonl", normalized_path),
-                          ("findings.jsonl", findings_path),
-                          ("raw/", os.path.join(cdir, "raw"))):
-            if os.path.exists(path):
-                found_files = True
-                ev_txt.insert("end", f"{rel:<26} {path}\n", "dim")
-        if not found_files:
-            ev_txt.insert("end", "No evidence files found.\n")
+        for cid in sorted(os.listdir(cases_dir)):
+            cdir = os.path.join(cases_dir, cid)
+            v = run["verdicts"].get(cid, {})
+            verdict, reason = v.get("verdict", "?"), (v.get("reason") or "")[:160]
+            tag = "ok" if verdict == "detected" else (
+                "bad" if verdict in ("silent", "tamper_positive") else None)
+            ev_txt.insert("end", f"{cid}\n", tag)
+            ev_txt.insert("end", f"   verdict : {verdict.upper()}\n",
+                          "purple" if verdict == "tamper_positive" else tag)
+            if reason:
+                ev_txt.insert("end", f"   reason  : {reason}\n")
+            for rel in ("exec.jsonl", "normalized/events.jsonl", "findings.jsonl", "raw"):
+                p = os.path.join(cdir, rel)
+                if os.path.exists(p):
+                    ev_txt.insert("end", f"   {rel:<26} {p}\n", "dim")
+            ev_txt.insert("end", "\n")
         ev_txt.configure(state="disabled")
-
-    ev_case_menu.bind("<<ComboboxSelected>>", load_evidence)
 
     analysis_files = {
         "exec.jsonl": ("exec.jsonl",),
@@ -1636,7 +1589,6 @@ def build_app():  # pragma: no cover - requires a display
         "case_info": case_info, "status": status, "runner": runner,
         "run_case_btn": run_case_btn, "run_suite_btn": run_suite_btn,
         "reload_cases": reload_case_data, "analysis_runs": analysis_run_menu,
-        "evidence_case_menu": ev_case_menu,
         "analysis_cases": analysis_case_menu, "analysis_sources": analysis_source_menu,
         "analysis_summary": analysis_summary, "analysis_viewer": analysis_viewer,
         "refresh_analysis": refresh_analysis,
