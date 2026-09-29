@@ -429,6 +429,9 @@ def build_app():  # pragma: no cover - requires a display
     # after the widgets exist) share the same StringVars/Comboboxes.
     report_run_var = tk.StringVar()
     ev_run_var = tk.StringVar()
+    analysis_run_var = tk.StringVar()
+    analysis_case_var = tk.StringVar()
+    analysis_source_var = tk.StringVar()
     report_run_menu = None  # assigned inside the Report tab's header()
     ev_run_menu = None      # assigned inside the Evidence tab's header()
 
@@ -577,6 +580,46 @@ def build_app():  # pragma: no cover - requires a display
 
     report_frame, report_txt = text_tab("Report", header=_report_header)
     _, ev_txt = text_tab("Evidence", header=_evidence_header)
+
+    analysis_frame = ttk.Frame(nb)
+    nb.add(analysis_frame, text="Analysis")
+    analysis_toolbar = ttk.Frame(analysis_frame)
+    analysis_toolbar.pack(fill="x", padx=10, pady=(10, 6))
+    ttk.Label(analysis_toolbar, text="RUN", style="Dim.TLabel").pack(side="left")
+    analysis_run_menu = ttk.Combobox(
+        analysis_toolbar, textvariable=analysis_run_var, state="readonly", width=17)
+    analysis_run_menu.pack(side="left", padx=(6, 10))
+    ttk.Label(analysis_toolbar, text="CASE", style="Dim.TLabel").pack(side="left")
+    analysis_case_menu = ttk.Combobox(
+        analysis_toolbar, textvariable=analysis_case_var, state="readonly", width=20)
+    analysis_case_menu.pack(side="left", padx=(6, 10))
+    ttk.Label(analysis_toolbar, text="FILE", style="Dim.TLabel").pack(side="left")
+    analysis_source_menu = ttk.Combobox(
+        analysis_toolbar, textvariable=analysis_source_var, state="readonly", width=20)
+    analysis_source_menu.pack(side="left", padx=(6, 8), fill="x", expand=True)
+    ttk.Button(analysis_toolbar, text="Refresh", command=lambda: refresh_analysis()).pack(
+        side="left")
+
+    analysis_summary = tk.Text(analysis_frame, height=9, bg=BG2, fg=FG,
+                               insertbackground=FG, relief="flat", wrap="word",
+                               font=("TkFixedFont", 9), padx=10, pady=8)
+    analysis_summary.pack(fill="x", padx=10, pady=(0, 8))
+    analysis_summary.configure(state="disabled")
+    analysis_viewer_frame = ttk.Frame(analysis_frame)
+    analysis_viewer_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+    analysis_viewer = tk.Text(analysis_viewer_frame, bg=BG2, fg=FG,
+                              insertbackground=FG, relief="flat", wrap="none",
+                              font=("TkFixedFont", 9), padx=10, pady=8,
+                              selectbackground=ACCENT)
+    analysis_scroll_y = ttk.Scrollbar(analysis_viewer_frame, orient="vertical",
+                                     command=analysis_viewer.yview)
+    analysis_scroll_x = ttk.Scrollbar(analysis_viewer_frame, orient="horizontal",
+                                     command=analysis_viewer.xview)
+    analysis_viewer.configure(yscrollcommand=analysis_scroll_y.set,
+                              xscrollcommand=analysis_scroll_x.set)
+    analysis_scroll_y.pack(side="right", fill="y")
+    analysis_scroll_x.pack(side="bottom", fill="x")
+    analysis_viewer.pack(side="left", fill="both", expand=True)
 
     # ---- Rules tab (new: browse rules/windows + rules/linux) --------------
     rules_frame = ttk.Frame(nb)
@@ -766,6 +809,7 @@ def build_app():  # pragma: no cover - requires a display
         if select_latest:
             open_selected_report()
             load_evidence(select_latest=True)
+            refresh_analysis(select_latest=True)
         refresh_selected_tab()
         render_dashboard()
 
@@ -981,6 +1025,150 @@ def build_app():  # pragma: no cover - requires a display
                     ev_txt.insert("end", f"   {rel:<26} {p}\n", "dim")
             ev_txt.insert("end", "\n")
         ev_txt.configure(state="disabled")
+
+    analysis_files = {
+        "exec.jsonl": ("exec.jsonl",),
+        "normalized/events.jsonl": ("normalized", "events.jsonl"),
+        "findings.jsonl": ("findings.jsonl",),
+    }
+
+    def set_analysis_text(widget, text):
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("end", text)
+        widget.configure(state="disabled")
+
+    def load_analysis_source(*_):
+        runs = scan_all_runs()
+        run = next((item for item in runs if item["run_id"] == analysis_run_var.get()), None)
+        case_id = analysis_case_var.get()
+        source = analysis_source_var.get()
+        if run is None or not case_id or source not in analysis_files:
+            set_analysis_text(analysis_viewer, "Not available")
+            return
+        case_dir = os.path.join(run["dir"], "cases", case_id)
+        path = os.path.join(case_dir, *analysis_files[source])
+        if (os.path.islink(run["dir"]) or os.path.islink(case_dir)
+                or os.path.islink(path) or not os.path.isfile(path)):
+            set_analysis_text(analysis_viewer, "Not available")
+            return
+        try:
+            with open(path, "rb") as stream:
+                raw = stream.read(1024 * 1024 + 1)
+            if b"\0" in raw[:8192]:
+                text = "Binary content is not available in this text viewer."
+            else:
+                text = raw[:1024 * 1024].decode("utf-8", errors="replace")
+                if len(raw) > 1024 * 1024:
+                    text += "\n\n[Display limited to 1 MiB. Source file was not modified.]"
+        except OSError:
+            text = "Not available"
+        set_analysis_text(analysis_viewer, text or "Not available")
+
+    def load_analysis_case(*_):
+        runs = scan_all_runs()
+        run = next((item for item in runs if item["run_id"] == analysis_run_var.get()), None)
+        case_id = analysis_case_var.get()
+        if run is None or not case_id:
+            set_analysis_text(analysis_summary, "Select a run and case to view its evidence.")
+            analysis_source_menu.configure(values=list(analysis_files))
+            analysis_source_var.set("exec.jsonl")
+            set_analysis_text(analysis_viewer, "Not available")
+            return
+
+        case_dir = os.path.join(run["dir"], "cases", case_id)
+        if (os.path.islink(run["dir"]) or os.path.islink(case_dir)
+                or not os.path.isdir(case_dir)):
+            set_analysis_text(analysis_summary,
+                              f"Case ID: {case_id}\nRun: {run['run_id']}\n"
+                              "Evidence files found: Not available")
+            analysis_source_menu.configure(values=list(analysis_files))
+            if analysis_source_var.get() not in analysis_files:
+                analysis_source_var.set("exec.jsonl")
+            set_analysis_text(analysis_viewer, "Not available")
+            return
+
+        score = {}
+        score_path = os.path.join(case_dir, "score.json")
+        if not os.path.islink(score_path):
+            try:
+                with open(score_path, encoding="utf-8") as stream:
+                    loaded = json.load(stream)
+                if isinstance(loaded, dict):
+                    score = loaded
+            except (OSError, ValueError):
+                pass
+        verdict_data = run.get("verdicts", {}).get(case_id, {})
+        verdict = score.get("verdict", verdict_data.get("verdict")) or "Not available"
+        reason = score.get("reason", verdict_data.get("reason")) or "Not available"
+        available = []
+        for name, parts in analysis_files.items():
+            path = os.path.join(case_dir, *parts)
+            if not os.path.islink(path) and os.path.isfile(path):
+                available.append(name)
+        lines = [
+            f"Case ID: {case_id}",
+            f"Verdict: {verdict}",
+            f"Reason: {reason}",
+            f"Evidence files found: {', '.join(available) if available else 'None'}",
+            f"Number of evidence files: {len(available)}",
+            f"exec.jsonl: {'Available' if 'exec.jsonl' in available else 'Not available'}",
+            ("normalized/events.jsonl: "
+             f"{'Available' if 'normalized/events.jsonl' in available else 'Not available'}"),
+            f"findings.jsonl: {'Available' if 'findings.jsonl' in available else 'Not available'}",
+        ]
+        set_analysis_text(analysis_summary, "\n".join(lines))
+        analysis_source_menu.configure(values=list(analysis_files))
+        current_source = analysis_source_var.get()
+        if current_source not in available:
+            current_source = available[0] if available else "exec.jsonl"
+            analysis_source_var.set(current_source)
+        load_analysis_source()
+
+    def refresh_analysis(*_, select_latest=False):
+        previous_run = "" if select_latest else analysis_run_var.get()
+        previous_case = analysis_case_var.get()
+        runs = scan_all_runs()
+        run_ids = [run["run_id"] for run in runs]
+        analysis_run_menu.configure(values=run_ids or ["(none yet)"])
+        if not runs:
+            analysis_run_var.set("")
+            analysis_case_menu.configure(values=[])
+            analysis_case_var.set("")
+            analysis_source_menu.configure(values=list(analysis_files))
+            analysis_source_var.set("exec.jsonl")
+            set_analysis_text(analysis_summary, "No runs recorded yet under store/.")
+            set_analysis_text(analysis_viewer, "Not available")
+            return
+        selected_run = (run_ids[0] if select_latest or previous_run not in run_ids
+                else previous_run)
+        analysis_run_var.set(selected_run)
+        run = next(item for item in runs if item["run_id"] == selected_run)
+        cases_dir = os.path.join(run["dir"], "cases")
+        case_ids = []
+        if not os.path.islink(cases_dir) and os.path.isdir(cases_dir):
+            try:
+                case_ids = sorted(name for name in os.listdir(cases_dir)
+                                  if not os.path.islink(os.path.join(cases_dir, name))
+                                  and os.path.isdir(os.path.join(cases_dir, name)))
+            except OSError:
+                pass
+        analysis_case_menu.configure(values=case_ids or ["(none available)"])
+        if not case_ids:
+            analysis_case_var.set("")
+            analysis_source_menu.configure(values=list(analysis_files))
+            analysis_source_var.set("exec.jsonl")
+            set_analysis_text(analysis_summary, f"Run: {selected_run}\nNo cases available.")
+            set_analysis_text(analysis_viewer, "Not available")
+            return
+        selected_case = previous_case if previous_case in case_ids else case_ids[0]
+        analysis_case_var.set(selected_case)
+        load_analysis_case()
+
+    analysis_run_menu.bind("<<ComboboxSelected>>", refresh_analysis)
+    analysis_case_menu.bind("<<ComboboxSelected>>", load_analysis_case)
+    analysis_source_menu.bind("<<ComboboxSelected>>", load_analysis_source)
+    refresh_analysis()
 
     ev_run_menu.bind("<<ComboboxSelected>>", load_evidence)
 
@@ -1371,7 +1559,10 @@ def build_app():  # pragma: no cover - requires a display
         "dashboard": dash_frame, "rules": rules_frame,
         "case_info": case_info, "status": status, "runner": runner,
         "run_case_btn": run_case_btn, "run_suite_btn": run_suite_btn,
-        "reload_cases": reload_case_data,
+        "reload_cases": reload_case_data, "analysis_runs": analysis_run_menu,
+        "analysis_cases": analysis_case_menu, "analysis_sources": analysis_source_menu,
+        "analysis_summary": analysis_summary, "analysis_viewer": analysis_viewer,
+        "refresh_analysis": refresh_analysis,
     }
     return root
 
