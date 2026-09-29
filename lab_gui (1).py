@@ -5,44 +5,6 @@ lab_gui.py — a Tkinter console for the EDR lab. Standard library only.
     python3 lab_gui.py            # launch
     python3 lab_gui.py --check    # verify the environment without opening a window
 
-WHY A GUI AND NOT JUST THE MAKEFILE
-    The Makefile is the right interface for a scripted run. It is a poor one for
-    the question you will actually ask forty times a day — "what happened in
-    W05, and why is it TAMPER_POSITIVE?" — because answering it means reading a
-    report, then opening the case directory, then grepping the findings. This
-    window puts the case list, the command output, the report and the evidence
-    paths in one place — and, across a run history the original console didn't
-    expose, the same for every run before it.
-
-WHAT IT IS NOT
-    It is not a second implementation of anything. Every button shells out to
-    the same entry points the Makefile calls — harness/run_all.py,
-    tools/preflight.sh, tools/isolation_check.py, tools/minisiem/engine.py.
-    If a button and the command line disagree, the GUI is wrong, not the
-    harness. Nothing here writes evidence, scores anything, or decides a
-    verdict.
-
-WHY IT STARTS IN A DEGRADED, HONEST STATE
-    Most of these buttons need the hypervisor host. If you open this on a
-    laptop that cannot reach the VMs, it does not pretend otherwise: the victim
-    buttons disable themselves, the status bar says why, and the offline
-    buttons (replay, self-test, case discovery, dashboard, rules browser) stay
-    live because they work anywhere.
-
-WHY THE CREDENTIAL IS NEVER A GUI FIELD
-    LAB_PASS is read from the environment the process was launched with. A
-    text field for it would end up in shell history and screenshots the
-    moment someone pastes a command referencing what they typed. If it's not
-    set, the Run buttons explain that and stay disabled — they do not offer
-    to collect it.
-
-WHY THE RUN BUTTONS ARE GUARDED AGAINST EACH OTHER
-    harness/run_all.py reverts the victim VM to a snapshot, runs a payload,
-    waits the capture window, reverts again. Two of those running at once
-    against the same VM produce evidence from two interleaved cases with no
-    way to tell them apart afterwards. The Runner below refuses to start a
-    second command while the first is still busy, full stop — not a warning,
-    a refusal.
 """
 
 from __future__ import annotations
@@ -453,6 +415,7 @@ def build_app():  # pragma: no cover - requires a display
     case_info = tk.Text(left, height=7, bg=BG2, fg=FG_DIM, insertbackground=FG,
                          relief="flat", wrap="word", font=("TkFixedFont", 9), padx=8, pady=6)
     case_info.pack(fill="x", pady=(6, 0))
+    case_info.insert("end", "Case Details:\nSelect a case to view its details.")
     case_info.configure(state="disabled")
 
     right = ttk.Frame(outer)
@@ -588,7 +551,7 @@ def build_app():  # pragma: no cover - requires a display
                 tags=(tag,) if tag else ())
 
     # ---- Run log / Report / Evidence tabs ----------------------------------
-    _, log_txt = text_tab("Run log")
+    log_frame, log_txt = text_tab("Run log")
 
     # Report and Evidence each get a run selector so past runs stay reachable
     # — the original console only ever showed the latest one. The combobox
@@ -798,7 +761,11 @@ def build_app():  # pragma: no cover - requires a display
         else:
             log(f"[gui] {label} finished with exit {rc}\n", "bad")
             set_status(f"{label}: exit {rc}", BAD)
-        refresh_reports()
+        select_latest = label.startswith("run ")
+        refresh_reports(select_latest=select_latest)
+        if select_latest:
+            open_selected_report()
+            load_evidence(select_latest=True)
         refresh_selected_tab()
         render_dashboard()
 
@@ -885,6 +852,10 @@ def build_app():  # pragma: no cover - requires a display
     def show_case(_event=None):
         sel = case_tree.selection()
         if not sel:
+            case_info.configure(state="normal")
+            case_info.delete("1.0", "end")
+            case_info.insert("end", "Case Details:\nSelect a case to view its details.")
+            case_info.configure(state="disabled")
             return
         c = next((x for x in cases if x["id"] == sel[0]), None)
         if not c:
@@ -921,7 +892,7 @@ def build_app():  # pragma: no cover - requires a display
     # report_run_var / report_run_menu were created back in _report_header();
     # reused here, not recreated, so the Combobox stays wired to this data.
 
-    def refresh_reports():
+    def refresh_reports(select_latest=False):
         report_index.clear()
         d = os.path.join(ROOT, "reports")
         if os.path.isdir(d):
@@ -930,7 +901,7 @@ def build_app():  # pragma: no cover - requires a display
                 reverse=True))
         labels = [os.path.basename(p) for p in report_index]
         report_run_menu.configure(values=labels or ["(none yet)"])
-        if labels and report_run_var.get() not in labels:
+        if labels and (select_latest or report_run_var.get() not in labels):
             report_run_var.set(labels[0])
 
     def open_selected_report(*_):
@@ -950,9 +921,31 @@ def build_app():  # pragma: no cover - requires a display
 
     report_run_menu.bind("<<ComboboxSelected>>", open_selected_report)
 
+    def open_run_report(event):
+        row = runs_tree.identify_row(event.y)
+        if not row:
+            return
+        runs_tree.selection_set(row)
+        run_id = runs_tree.item(row, "text")
+        report_name = f"report_{run_id}.md"
+        refresh_reports()
+        nb.select(report_frame)
+        if any(os.path.basename(path) == report_name for path in report_index):
+            report_run_var.set(report_name)
+            open_selected_report()
+        else:
+            report_txt.configure(state="normal")
+            report_txt.delete("1.0", "end")
+            report_txt.insert("end", f"No report found for run {run_id}.\n")
+            report_txt.configure(state="disabled")
+            set_status(f"no report for {run_id}", FG_DIM)
+        return "break"
+
+    runs_tree.bind("<Double-1>", open_run_report)
+
     # ev_run_var / ev_run_menu were created back in _evidence_header().
 
-    def load_evidence(*_):
+    def load_evidence(*_, select_latest=False):
         ev_txt.configure(state="normal")
         ev_txt.delete("1.0", "end")
         runs = scan_all_runs()
@@ -962,7 +955,7 @@ def build_app():  # pragma: no cover - requires a display
             ev_txt.insert("end", "No runs recorded yet under store/.\n")
             ev_txt.configure(state="disabled")
             return
-        if ev_run_var.get() not in run_ids:
+        if select_latest or ev_run_var.get() not in run_ids:
             ev_run_var.set(run_ids[0])
         run = next(r for r in runs if r["run_id"] == ev_run_var.get())
         ev_txt.insert("end", f"RUN {run['run_id']}\n" + "=" * 60 + "\n\n")
@@ -1070,7 +1063,8 @@ def build_app():  # pragma: no cover - requires a display
         argv = [py(), "harness/run_all.py", "--case", sel[0]]
         if skip_preflight_var.get():
             argv.append("--skip-preflight")
-        run(argv, f"run {sel[0]}")
+        if run(argv, f"run {sel[0]}"):
+            nb.select(log_frame)
 
     def do_run_suite():
         suite = suite_var.get()
@@ -1104,45 +1098,241 @@ def build_app():  # pragma: no cover - requires a display
     # buttons
     # ------------------------------------------------------------------ #
     btns = ttk.Frame(right)
-    btns.pack(fill="x", pady=(8, 0))
+    btns.pack(fill="x")
+    nb.configure(height=350)
+    for column in range(2):
+        btns.columnconfigure(column, weight=1)
 
-    def row():
-        f = ttk.Frame(btns)
-        f.pack(fill="x", pady=(0, 6))
-        return f
+    def shade(color, factor):
+        channels = [int(color[index:index + 2], 16) for index in (1, 3, 5)]
+        return "#" + "".join(f"{min(255, max(0, round(value * factor))):02x}"
+                              for value in channels)
 
-    r1 = row()
-    for label, fn in (("Preflight (static)", do_preflight_static),
-                       ("Preflight (isolation)", do_preflight_iso),
-                       ("Self-test", do_self_test),
-                       ("Rules check", do_rules),
-                       ("Manifest", do_manifest),
-                       ("Open repo folder", do_open_root)):
-        ttk.Button(r1, text=label, command=fn).pack(side="left", padx=(0, 6))
+    class ModernButton(tk.Frame):
+        """Compact custom button with mouse, keyboard, and ttk-like state support."""
 
-    r2 = row()
-    for label, fn in (("Replay evidence…", do_replay),
-                       ("Dry run", do_dry_run),
-                       ("List cases", do_list),
-                       ("Refresh dashboard", render_dashboard),
-                       ("Reload cases", reload_case_data)):
-        ttk.Button(r2, text=label, command=fn).pack(side="left", padx=(0, 6))
+        def __init__(self, parent, text, command, variant="secondary"):
+            self._command = command
+            self._variant = variant
+            self._state = "normal"
+            self._hovered = False
+            self._pressed = False
+            self._focused = False
+            super().__init__(parent, bg=BG2, bd=0, relief="flat",
+                             highlightthickness=1, highlightbackground=BG3,
+                             highlightcolor=ACCENT, takefocus=1, cursor="hand2")
+            self._label = tk.Label(
+                self, text=text, bg=BG2, fg=FG, bd=0, relief="flat",
+                padx=13, pady=7, font=("TkDefaultFont", 9, "bold"),
+                anchor="center", cursor="hand2")
+            self._label.pack(fill="both", expand=True)
+            self._label.bind("<Enter>", self._on_enter)
+            self._label.bind("<Leave>", self._on_leave)
+            self._label.bind("<ButtonPress-1>", self._on_press)
+            self._label.bind("<ButtonRelease-1>", self._on_release)
+            self.bind("<FocusIn>", self._on_focus_in)
+            self.bind("<FocusOut>", self._on_focus_out)
+            self.bind("<KeyPress-space>", self._on_key_press)
+            self.bind("<KeyRelease-space>", self._on_key_release)
+            self.bind("<KeyPress-Return>", self._on_key_press)
+            self.bind("<KeyRelease-Return>", self._on_key_release)
+            self._render()
 
-    r3 = row()
+        def configure(self, cnf=None, **kwargs):
+            if cnf == "state":
+                return self._state
+            if isinstance(cnf, dict):
+                options = dict(cnf)
+                options.update(kwargs)
+                kwargs = options
+                cnf = None
+            state = kwargs.pop("state", None)
+            result = super().configure(cnf, **kwargs)
+            if state is not None:
+                self._state = state
+                self._pressed = False
+                self._render()
+            return result
+
+        config = configure
+
+        def cget(self, key):
+            if key == "state":
+                return self._state
+            return super().cget(key)
+
+        def invoke(self):
+            if self._state != "disabled" and self._command:
+                return self._command()
+            return None
+
+        def _render(self):
+            if not hasattr(self, "_label"):
+                return
+            if self._state == "disabled":
+                background, foreground, border = BG2, FG_DIM, BG3
+            elif self._variant == "primary":
+                background, foreground, border = ACCENT, BG, ACCENT
+            elif self._variant == "primary-secondary":
+                background, foreground, border = BG3, FG, ACCENT
+            elif self._variant == "danger":
+                background, foreground, border = BG2, BAD, BAD
+            else:
+                background, foreground, border = BG2, FG, BG3
+
+            if self._state != "disabled":
+                if self._pressed:
+                    background = shade(background, 0.78)
+                elif self._hovered:
+                    if self._variant == "danger":
+                        background, foreground = BAD, BG
+                    else:
+                        background = shade(background, 1.14)
+                if self._focused:
+                    border = ACCENT
+
+            cursor = "hand2" if self._state == "normal" else "arrow"
+            self.configure(bg=background, highlightbackground=border,
+                           highlightcolor=ACCENT, cursor=cursor)
+            self._label.configure(bg=background, fg=foreground, cursor=cursor)
+
+        def _on_enter(self, _event):
+            self._hovered = True
+            self._render()
+
+        def _on_leave(self, _event):
+            self._hovered = False
+            self._pressed = False
+            self._render()
+
+        def _on_press(self, _event):
+            if self._state == "normal":
+                self.focus_set()
+                self._pressed = True
+                self._render()
+            return "break"
+
+        def _on_release(self, event):
+            was_pressed = self._pressed
+            inside = (0 <= event.x < self._label.winfo_width()
+                      and 0 <= event.y < self._label.winfo_height())
+            self._pressed = False
+            self._render()
+            if was_pressed and inside:
+                self.invoke()
+            return "break"
+
+        def _on_focus_in(self, _event):
+            self._focused = True
+            self._render()
+
+        def _on_focus_out(self, _event):
+            self._focused = False
+            self._render()
+
+        def _on_key_press(self, _event):
+            if self._state == "normal":
+                self._pressed = True
+                self._render()
+            return "break"
+
+        def _on_key_release(self, _event):
+            was_pressed = self._pressed
+            self._pressed = False
+            self._render()
+            if was_pressed:
+                self.invoke()
+            return "break"
+
+    def button_group(title, row, column):
+        frame = tk.Frame(btns, bg=BG2, bd=0, highlightthickness=1,
+                         highlightbackground=BG3)
+        frame.grid(row=row, column=column, sticky="nsew",
+                   padx=(0, 6) if column == 0 else (6, 0), pady=(0, 6))
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        heading = tk.Label(frame, text=title.upper(), bg=BG2, fg=FG_DIM,
+                           font=("TkDefaultFont", 9, "bold"), anchor="w")
+        heading.grid(row=0, column=0, columnspan=2, sticky="ew",
+                     padx=11, pady=(8, 5))
+        tk.Frame(frame, bg=BG3, height=1).grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=10)
+        return frame
+
+    def add_action(parent, label, command, row, column):
+        button = ModernButton(parent, label, command)
+        button.grid(row=row, column=column, sticky="ew",
+                    padx=(8, 4) if column == 0 else (4, 8), pady=(6, 0))
+        action_buttons.append(button)
+        return button
+
+    def select_page(title):
+        for tab in nb.tabs():
+            if nb.tab(tab, "text") == title:
+                nb.select(tab)
+                return
+
+    def route_action(command, page):
+        def invoke():
+            if page == "Cases":
+                case_tree.focus_set()
+            elif page:
+                select_page(page)
+            return command()
+        return invoke
+
+    def stop_and_show_log():
+        select_page("Run log")
+        return runner.stop()
+
+    run_group = tk.Frame(btns, bg=BG2, bd=0, highlightthickness=1,
+                         highlightbackground=BG3)
+    run_group.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+    run_header = tk.Label(run_group, text="RUN", bg=BG2, fg=ACCENT,
+                          font=("TkDefaultFont", 9, "bold"), anchor="w")
+    run_header.pack(fill="x", padx=12, pady=(8, 4))
+    run_controls = tk.Frame(run_group, bg=BG2)
+    run_controls.pack(fill="x", padx=10, pady=(0, 9))
+    run_controls.columnconfigure(0, weight=2)
     skip_preflight_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(r3, text="Skip preflight", variable=skip_preflight_var).pack(
-        side="left", padx=(0, 12))
+    run_controls.columnconfigure(1, weight=1)
+    run_case_btn = ModernButton(run_controls, "▶  Run selected case", do_run_case, "primary")
+    run_case_btn.grid(row=0, column=0, sticky="ew", padx=(0, 7))
+    run_suite_btn = ModernButton(run_controls, "▶  Run suite",
+                                 route_action(do_run_suite, "Run log"),
+                                 "primary-secondary")
+    run_suite_btn.grid(row=0, column=1, sticky="ew", padx=(0, 7))
+    stop_btn = ModernButton(run_controls, "■  Stop", stop_and_show_log, "danger")
+    stop_btn.grid(row=0, column=2, sticky="ew", padx=(0, 12))
+    skip_preflight_cb = ttk.Checkbutton(
+        run_controls, text="Skip preflight", variable=skip_preflight_var)
+    skip_preflight_cb.grid(row=0, column=3, sticky="e", padx=(4, 2))
+    action_buttons.extend((run_case_btn, run_suite_btn))
 
-    run_case_btn = ttk.Button(r3, text="▶  Run selected case", command=do_run_case)
-    run_case_btn.pack(side="left", padx=(0, 6))
-    run_suite_btn = ttk.Button(r3, text="▶  Run suite", command=do_run_suite)
-    run_suite_btn.pack(side="left", padx=(0, 6))
-    stop_btn = ttk.Button(r3, text="■  Stop", command=runner.stop)
-    stop_btn.pack(side="left", padx=(0, 6))
+    checks_group = button_group("Lab & workspace", 1, 0)
+    for index, (label, fn) in enumerate((
+            ("Preflight (static)", do_preflight_static),
+            ("Preflight (isolation)", do_preflight_iso),
+            ("Self-test", do_self_test),
+            ("Rules check", do_rules),
+            ("Manifest", do_manifest),
+            ("Open repo folder", do_open_root))):
+        page = None if label == "Open repo folder" else "Run log"
+        add_action(checks_group, label,
+               route_action(fn, page) if page else fn,
+               2 + index // 2, index % 2)
 
-    for frame in (r1, r2, r3):
-        action_buttons.extend(w for w in frame.winfo_children()
-                               if isinstance(w, ttk.Button) and w is not stop_btn)
+    evidence_group = button_group("Evidence & cases", 1, 1)
+    for index, (label, fn) in enumerate((
+            ("Replay evidence…", do_replay),
+            ("Dry run", do_dry_run),
+            ("List cases", do_list),
+            ("Refresh dashboard", render_dashboard),
+            ("Reload cases", reload_case_data))):
+        page = {"Refresh dashboard": "Dashboard", "Reload cases": "Cases"}.get(
+            label, "Run log")
+        add_action(evidence_group, label, route_action(fn, page),
+                   2 + index // 2, index % 2)
 
     reasons = []
     if env["missing"]:
@@ -1155,8 +1345,9 @@ def build_app():  # pragma: no cover - requires a display
     if blocked_reason:
         run_case_btn.configure(state="disabled")
         run_suite_btn.configure(state="disabled")
-        ttk.Label(r3, text=f"  (scored runs disabled: {blocked_reason})",
-                  style="Dim.TLabel").pack(side="left")
+        ttk.Label(run_group, text=f"Scored runs disabled: {blocked_reason}",
+                  style="Dim.TLabel", wraplength=700).pack(anchor="w", padx=12,
+                                                           pady=(0, 8))
 
     set_status(f"{env['n_cases']} cases · {env['n_rules']} rules · "
                f"{'cred set' if env['lab_pass'] else 'no credential'}", FG_DIM)
